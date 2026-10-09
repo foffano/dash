@@ -74,6 +74,8 @@ db.exec(`
     file TEXT, at INTEGER, rows INTEGER, created INTEGER, updated INTEGER, min_t INTEGER, max_t INTEGER
   );
 `);
+// Bancos criados antes da v1.6.0 não têm a coluna de nota cancelada.
+try { db.exec('ALTER TABLE invoices ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0'); } catch { /* já existe */ }
 const q = {
   exists: db.prepare('SELECT 1 FROM orders WHERE key = ?'),
   upsert: db.prepare('INSERT INTO orders (key, t, data, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET t = excluded.t, data = excluded.data, updated_at = excluded.updated_at'),
@@ -86,8 +88,10 @@ const q = {
   upsertInvoice: db.prepare(`INSERT INTO invoices (chave, order_no, emitted_at, doc, name, city, uf, cep, value, imported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(chave) DO UPDATE SET order_no = excluded.order_no, emitted_at = excluded.emitted_at, doc = excluded.doc, name = excluded.name,
     city = excluded.city, uf = excluded.uf, cep = excluded.cep, value = excluded.value, imported_at = excluded.imported_at`),
-  invoiceExists: db.prepare('SELECT 1 FROM invoices WHERE chave = ?'),
-  allInvoices: db.prepare('SELECT chave, order_no AS orderNo, emitted_at AS emittedAt, doc, name, city, uf, cep, value FROM invoices ORDER BY emitted_at'),
+  invoiceExists: db.prepare('SELECT 1 FROM invoices WHERE chave = ? AND (name IS NOT NULL OR doc IS NOT NULL)'),
+  // Evento de cancelamento pode chegar antes da própria nota: cria a linha só com a chave.
+  cancelInvoice: db.prepare('INSERT INTO invoices (chave, cancelled, imported_at) VALUES (?, 1, ?) ON CONFLICT(chave) DO UPDATE SET cancelled = 1'),
+  allInvoices: db.prepare('SELECT chave, order_no AS orderNo, emitted_at AS emittedAt, doc, name, city, uf, cep, value, cancelled FROM invoices ORDER BY emitted_at'),
   allImports: db.prepare('SELECT id, file, at, rows, created, updated, min_t AS minT, max_t AS maxT FROM imports ORDER BY at DESC'),
 };
 
@@ -278,7 +282,12 @@ function packOrders() {
   // Nota fiscal de cada pedido, pelo "Nº de Pedido" da UpSeller (campo xPed da NF-e). Vale a mais recente.
   const inv = new Map();
   let total = 0;
-  for (const n of q.allInvoices.iterate()) { total++; if (n.orderNo) inv.set(n.orderNo, n); }
+  let cancelled = 0;
+  for (const n of q.allInvoices.iterate()) {
+    if (n.cancelled) { cancelled++; continue; } // nota cancelada não vale para o pedido
+    if (!n.orderNo) continue;
+    total++; inv.set(n.orderNo, n);
+  }
   let linked = 0;
   const dict = [], index = new Map();
   const enc = (f, v) => {
@@ -304,7 +313,7 @@ function packOrders() {
     row.push((o.items || []).map(it => ITEM_FIELDS.map(f => enc(f, it[f]))));
     orders.push(row);
   }
-  return { orderFields: ORDER_FIELDS, itemFields: ITEM_FIELDS, dictFields: [...DICT_FIELDS], dict, orders, invoices: { total, linked } };
+  return { orderFields: ORDER_FIELDS, itemFields: ITEM_FIELDS, dictFields: [...DICT_FIELDS], dict, orders, invoices: { total, linked, cancelled } };
 }
 let boot = null, bootTimer = null;
 function bootData() {
@@ -389,10 +398,12 @@ async function api(req, res, pathname) {
     const list = Array.isArray(b.invoices) ? b.invoices : [];
     const digits = (v, max) => String(v ?? '').replace(/\D/g, '').slice(0, max);
     const num = v => (Number.isFinite(+v) && v !== null && v !== '' ? +v : null);
-    let created = 0, updated = 0;
+    const cancels = Array.isArray(b.cancel) ? b.cancel : [];
+    let created = 0, updated = 0, cancelled = 0;
     const now = Date.now();
     db.exec('BEGIN');
     try {
+      for (const c of cancels) { const chave = digits(c, 44); if (chave.length === 44) { q.cancelInvoice.run(chave, now); cancelled++; } }
       for (const n of list) {
         const chave = digits(n?.chave, 44);
         if (chave.length !== 44) continue;
@@ -403,7 +414,7 @@ async function api(req, res, pathname) {
       db.exec('COMMIT');
     } catch (e) { db.exec('ROLLBACK'); throw e; }
     invalidateBoot();
-    return json(req, res, 200, { created, updated });
+    return json(req, res, 200, { created, updated, cancelled });
   }
   if (pathname === '/api/imports' && m === 'POST') {
     const b = await readJson(req);

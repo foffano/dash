@@ -191,9 +191,10 @@
         <header class="page-head"><h1>Importar dados</h1><p>As planilhas são lidas no navegador e só os campos usados no painel são enviados ao servidor.</p></header>
         <label class="drop" id="drop">
           <svg width="22" height="22" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10V2.5m-3 3 3-3 3 3M2.5 10v3.5h11V10"/></svg>
-          <span><b>Arraste as planilhas da UpSeller ou os XMLs das notas fiscais</b> ou <span class="link-btn">escolha os arquivos</span></span>
-          <span class="muted">.xlsx, .xls, .csv, NF-e .xml (ou .zip com XMLs) ou backup .json. Pedidos e notas repetidos são atualizados, não duplicados.</span>
+          <span><b>Arraste as planilhas da UpSeller ou a pasta das notas fiscais</b> · <span class="link-btn">escolha arquivos</span> ou <button type="button" class="link-btn" id="pickFolder">escolha uma pasta</button></span>
+          <span class="muted">.xlsx, .xls, .csv, backup .json, ou notas fiscais (pasta com os XMLs, .zip ou .xml). Para milhares de notas, use a pasta inteira ou o .zip. Pedidos e notas repetidos são atualizados, não duplicados.</span>
           <input type="file" id="fileInput" multiple accept=".xlsx,.xls,.csv,.txt,.json,.xml,.zip" hidden>
+          <input type="file" id="folderInput" webkitdirectory multiple hidden>
         </label>
         <div class="grid">
           <div class="block"><div class="ph"><h3>Base atual</h3></div><dl class="kv-list" id="baseStats"></dl>

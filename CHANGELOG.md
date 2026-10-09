@@ -2,6 +2,13 @@
 
 Versões no formato [SemVer](https://semver.org/lang/pt-BR/). Cada versão é uma release no GitHub (`vX.Y.Z`).
 
+## v1.6.0 — 2026-10-09
+
+- Importação de notas fiscais aceita a pasta inteira (arrastada ou pelo botão "escolha uma pasta"), inclusive com subpastas, como a exportação da UpSeller (`UpSeller Issue/Outbound Invoice/Sale`).
+- Corrige o erro "The I/O read operation failed" ao arrastar milhares de XMLs soltos no Safari: os arquivos são lidos e enviados em lotes, com nova tentativa; o que não puder ser lido aparece num resumo, com a orientação de usar a pasta ou o .zip.
+- Eventos de cancelamento de NF-e (`-event.xml`) marcam a nota como cancelada, mesmo que cheguem antes da nota; nota cancelada não vale para o pedido.
+- Mensagens de importação resumidas (no máximo 3 erros e totais).
+
 ## v1.5.0 — 2026-10-09
 
 - Importação de notas fiscais (XML da NF-e, soltos ou em .zip) na tela Importar dados. Cada nota se liga ao pedido pelo "Nº de Pedido" da UpSeller (`xPed`); notas de entrada e não autorizadas são ignoradas.

@@ -129,6 +129,9 @@ function parseNFe(text){
   if(doc.getElementsByTagName('parsererror').length)return null;
   const one=(el,tag)=>el?.getElementsByTagNameNS('*',tag)[0]||null;
   const txt=(el,tag)=>(one(el,tag)?.textContent||'').trim();
+  // Evento de cancelamento (arquivos -event.xml): a nota daquela chave deixa de valer.
+  const ev=one(doc,'infEvento');
+  if(ev&&!one(doc,'infNFe'))return txt(ev,'tpEvento')==='110111'?{cancel:txt(ev,'chNFe').replace(/\D/g,'')}:{skip:true};
   const inf=one(doc,'infNFe');if(!inf)return null;
   const ide=one(inf,'ide');
   if(txt(ide,'tpNF')!=='1')return{skip:true};                       // nota de entrada (ex.: devolução)
@@ -143,19 +146,14 @@ function parseNFe(text){
     value:+txt(one(inf,'ICMSTot'),'vNF')||null
   };
 }
-async function readInvoiceFile(file){
-  const texts=[];
-  if(/\.zip$/i.test(file.name)){
-    await loadXlsx();
-    const z=XLSX.CFB.read(new Uint8Array(await file.arrayBuffer()),{type:'array'});
-    const dec=new TextDecoder('utf-8');
-    z.FileIndex.forEach((e,i)=>{if(e.type===2&&/\.xml$/i.test(z.FullPaths[i]||e.name)&&e.content)texts.push(dec.decode(e.content))});
-    if(!texts.length)throw new Error('o .zip não tem arquivos .xml');
-  } else texts.push(await file.text());
-  const out=[];let skipped=0,invalid=0;
-  for(const t of texts){const n=parseNFe(t);if(!n)invalid++;else if(n.skip)skipped++;else if(n.chave.length===44)out.push(n);else invalid++}
-  if(!out.length&&!skipped)throw new Error('não é um XML de NF-e');
-  return{invoices:out,skipped,invalid};
+async function readInvoiceTexts(file){
+  if(!/\.zip$/i.test(file.name))return[await file.text()];
+  await loadXlsx();
+  const z=XLSX.CFB.read(new Uint8Array(await file.arrayBuffer()),{type:'array'});
+  const dec=new TextDecoder('utf-8'),texts=[];
+  z.FileIndex.forEach((e,i)=>{if(e.type===2&&/\.xml$/i.test(z.FullPaths[i]||e.name)&&e.content)texts.push(dec.decode(e.content))});
+  if(!texts.length)throw new Error('o .zip não tem arquivos .xml');
+  return texts;
 }
 async function readSheetFile(file){
   await loadXlsx();
@@ -933,7 +931,7 @@ function renderOperacao(){
 
 /* ================= aba: dados ================= */
 function invStats(){const s=state.invoiceStats;if(!s||!s.total)return '<dt>Notas fiscais</dt><dd>0</dd>';
-  return`<dt>Notas fiscais</dt><dd>${fmtN(s.total)}</dd><dt>Pedidos com nota</dt><dd>${fmtN(s.linked)} <span class="muted">${fmtP(state.orders.length?s.linked/state.orders.length:0,0)}</span></dd>`}
+  return`<dt>Notas fiscais</dt><dd>${fmtN(s.total)}</dd><dt>Pedidos com nota</dt><dd>${fmtN(s.linked)} <span class="muted">${fmtP(state.orders.length?s.linked/state.orders.length:0,0)}</span></dd>${s.cancelled?`<dt>Notas canceladas</dt><dd>${fmtN(s.cancelled)}</dd>`:''}`}
 function renderDados(){
   const o=state.orders,real=o.filter(x=>!x.sample);
   let minT=Infinity,maxT=-Infinity;for(const x of real)if(x.t!=null){minT=Math.min(minT,x.t);maxT=Math.max(maxT,x.t)}
@@ -942,49 +940,92 @@ function renderDados(){
   const log=state.imports.slice().sort((a,b)=>b.at-a.at);
   $('#importLog').innerHTML=log.length?`<table><thead><tr><th>Arquivo</th><th>Data</th><th class="n">Linhas</th><th class="n">Novos</th><th class="n">Atualizados</th><th>Pedidos de</th></tr></thead><tbody>${log.map(l=>`<tr><td class="wrap-cell">${esc(l.file)}</td><td>${new Date(l.at).toLocaleString('pt-BR',{dateStyle:'short',timeStyle:'short'})}</td><td class="n">${fmtN(l.rows)}</td><td class="n">${fmtN(l.created)}</td><td class="n">${fmtN(l.updated)}</td><td>${fmtDate(l.minT)} a ${fmtDate(l.maxT)}</td></tr>`).join('')}</tbody></table>`:'<div class="empty">Nenhuma planilha importada ainda.</div>';
 }
-async function sendInvoices(list,label){
-  let c=0,u=0;
-  for(let i=0;i<list.length;i+=1000){
-    const r=await api('/api/invoices',{method:'POST',body:{invoices:list.slice(i,i+1000)}});c+=r.created;u+=r.updated;
-    if(list.length>1000)toast(`Enviando ${label}: ${fmtN(Math.min(i+1000,list.length))} de ${fmtN(list.length)} notas…`,60000);
-  }
-  let mn=Infinity,mx=-Infinity;for(const n of list)if(n.emittedAt){mn=Math.min(mn,n.emittedAt);mx=Math.max(mx,n.emittedAt)}
-  await api('/api/imports',{method:'POST',body:{file:label,rows:list.length,created:c,updated:u,minT:Number.isFinite(mn)?mn:null,maxT:Number.isFinite(mx)?mx:null}});
-  return{c,u};
+// Uma "fonte" é um arquivo ainda não lido: {name, file()}. Numa pasta arrastada, o arquivo só é aberto
+// na hora de ler. Com milhares de arquivos soltos o Safari perde a permissão de leitura no meio do caminho
+// ("The I/O read operation failed"); a pasta inteira ou um .zip não têm esse problema.
+const fromFile=f=>({name:f.name,file:()=>Promise.resolve(f)});
+const fromEntry=e=>({name:e.name,file:()=>new Promise((ok,fail)=>e.file(ok,fail))});
+async function walkEntry(entry,out){
+  if(entry.isFile){out.push(fromEntry(entry));return}
+  if(!entry.isDirectory)return;
+  const reader=entry.createReader();
+  for(;;){const batch=await new Promise((ok,fail)=>reader.readEntries(ok,fail));if(!batch.length)break;for(const e of batch)await walkEntry(e,out)}
 }
-async function importFiles(files){
-  let created=0,updated=0,nfNew=0,nfUpd=0,nfSkip=0;const errors=[];
-  showTab('dados');toast('Importando…',60000);
-  // Notas fiscais: todos os XMLs soltos viram uma importação só.
-  const nfFiles=files.filter(f=>/\.(xml|zip)$/i.test(f.name));files=files.filter(f=>!nfFiles.includes(f));
-  if(nfFiles.length){
-    let all=[];
-    for(const f of nfFiles){try{const r=await readInvoiceFile(f);all=all.concat(r.invoices);nfSkip+=r.skipped+r.invalid}catch(e){errors.push(`${f.name}: ${e.message||e}`)}}
-    if(all.length)try{const label=nfFiles.length===1?nfFiles[0].name:`${fmtN(nfFiles.length)} arquivos de nota fiscal`;const r=await sendInvoices(all,label);nfNew+=r.c;nfUpd+=r.u}
-      catch(e){if(e instanceof AuthError)return;errors.push(`notas fiscais: ${e.message||e}`)}
-  }
-  for(const f of files){
+async function sourcesFromDrop(dt){
+  // webkitGetAsEntry só funciona durante o evento de soltar: pega as entradas antes de qualquer await.
+  const entries=[...(dt?.items||[])].map(i=>i.kind==='file'&&i.webkitGetAsEntry?.()).filter(Boolean);
+  if(!entries.length)return[...(dt?.files||[])].map(fromFile);
+  const out=[];for(const e of entries)await walkEntry(e,out);return out;
+}
+async function readWithRetry(src,read){
+  try{return await read(await src.file())}
+  catch(e){if(!/I\/O|NotReadable|could not be read/i.test(String(e?.message||e)+e?.name))throw e;
+    await new Promise(r=>setTimeout(r,300));return await read(await src.file())}
+}
+async function sendInvoiceBatch(invoices,cancel){
+  const r=await api('/api/invoices',{method:'POST',body:{invoices,cancel}});
+  return r;
+}
+async function importInvoices(sources,label,st){
+  let batch=[],cancels=[],mn=Infinity,mx=-Infinity,c=0,u=0,done=0;
+  const flush=async()=>{
+    if(!batch.length&&!cancels.length)return;
+    const r=await sendInvoiceBatch(batch,cancels);c+=r.created;u+=r.updated;st.nfCancel+=r.cancelled||0;batch=[];cancels=[];
+  };
+  for(const src of sources){
     try{
-      let orders,rowsN;
-      if(/\.json$/i.test(f.name)){const j=JSON.parse(await f.text());orders=(Array.isArray(j)?j:j.orders||[]).filter(o=>o&&o.key&&Array.isArray(o.items)).map(o=>({...stripDerived(o),sample:false}));rowsN=orders.length;
-        if(Array.isArray(j.invoices)&&j.invoices.length){const r=await sendInvoices(j.invoices,f.name+' (notas)');nfNew+=r.c;nfUpd+=r.u}}
-      else{const{rows}=await readSheetFile(f);rowsN=rows.length;orders=buildOrders(rows,f.name)}
-      if(!orders.length)throw new Error('nenhum pedido com número encontrado');
-      let c=0,u=0,mn=Infinity,mx=-Infinity;
-      for(const o of orders)if(o.t!=null){mn=Math.min(mn,o.t);mx=Math.max(mx,o.t)}
-      for(let i=0;i<orders.length;i+=1500){
-        const r=await api('/api/orders',{method:'POST',body:{orders:orders.slice(i,i+1500)}});
-        c+=r.created;u+=r.updated;
-        if(orders.length>1500)toast(`Enviando ${f.name}: ${fmtN(Math.min(i+1500,orders.length))} de ${fmtN(orders.length)} pedidos…`,60000);
-      }
-      created+=c;updated+=u;
-      await api('/api/imports',{method:'POST',body:{file:f.name,rows:rowsN,created:c,updated:u,minT:Number.isFinite(mn)?mn:null,maxT:Number.isFinite(mx)?mx:null}});
-    }catch(e){if(e instanceof AuthError)return;errors.push(`${f.name}: ${e.message||e}`)}
+      const texts=await readWithRetry(src,readInvoiceTexts);
+      for(const t of texts){const n=parseNFe(t);
+        if(!n)st.nfInvalid++;else if(n.cancel)cancels.push(n.cancel);else if(n.skip)st.nfSkip++;
+        else if(n.chave.length===44){batch.push(n);if(n.emittedAt){mn=Math.min(mn,n.emittedAt);mx=Math.max(mx,n.emittedAt)}}else st.nfInvalid++}
+    }catch(e){if(e instanceof AuthError)throw e;st.unreadable.push(src.name)}
+    if(++done%200===0)toast(`Lendo notas fiscais: ${fmtN(done)} de ${fmtN(sources.length)} arquivos…`,60000);
+    if(batch.length>=1000)await flush();
   }
-  if(created+updated+nfNew+nfUpd>0){await loadData();refresh();resolveNames()}
+  await flush();
+  if(c+u)await api('/api/imports',{method:'POST',body:{file:label,rows:c+u,created:c,updated:u,minT:Number.isFinite(mn)?mn:null,maxT:Number.isFinite(mx)?mx:null}});
+  st.nfNew+=c;st.nfUpd+=u;
+}
+async function importFiles(input){
+  const sources=input.map(x=>x instanceof File?fromFile(x):x);
+  const st={nfNew:0,nfUpd:0,nfSkip:0,nfInvalid:0,nfCancel:0,unreadable:[]};
+  let created=0,updated=0;const errors=[];
+  showTab('dados');toast('Importando…',60000);
+  try{
+    // Notas fiscais: todos os XMLs (soltos, numa pasta ou em .zip) viram uma importação só.
+    const nf=sources.filter(f=>/\.(xml|zip)$/i.test(f.name));
+    if(nf.length)await importInvoices(nf,nf.length===1?nf[0].name:`${fmtN(nf.length)} arquivos de nota fiscal`,st);
+    for(const src of sources.filter(f=>/\.(xlsx|xls|csv|txt|json)$/i.test(f.name))){
+      try{
+        const f=await src.file();
+        let orders,rowsN;
+        if(/\.json$/i.test(f.name)){const j=JSON.parse(await f.text());orders=(Array.isArray(j)?j:j.orders||[]).filter(o=>o&&o.key&&Array.isArray(o.items)).map(o=>({...stripDerived(o),sample:false}));rowsN=orders.length;
+          if(Array.isArray(j.invoices)&&j.invoices.length){
+            const inv=j.invoices.filter(n=>n.name||n.doc),canc=j.invoices.filter(n=>n.cancelled).map(n=>n.chave);
+            for(let i=0;i<Math.max(inv.length,canc.length);i+=1000){const r=await sendInvoiceBatch(inv.slice(i,i+1000),canc.slice(i,i+1000));st.nfNew+=r.created;st.nfUpd+=r.updated}}}
+        else{const{rows}=await readSheetFile(f);rowsN=rows.length;orders=buildOrders(rows,f.name)}
+        if(!orders.length)throw new Error('nenhum pedido com número encontrado');
+        let c=0,u=0,mn=Infinity,mx=-Infinity;
+        for(const o of orders)if(o.t!=null){mn=Math.min(mn,o.t);mx=Math.max(mx,o.t)}
+        for(let i=0;i<orders.length;i+=1500){
+          const r=await api('/api/orders',{method:'POST',body:{orders:orders.slice(i,i+1500)}});
+          c+=r.created;u+=r.updated;
+          if(orders.length>1500)toast(`Enviando ${f.name}: ${fmtN(Math.min(i+1500,orders.length))} de ${fmtN(orders.length)} pedidos…`,60000);
+        }
+        created+=c;updated+=u;
+        await api('/api/imports',{method:'POST',body:{file:f.name,rows:rowsN,created:c,updated:u,minT:Number.isFinite(mn)?mn:null,maxT:Number.isFinite(mx)?mx:null}});
+      }catch(e){if(e instanceof AuthError)throw e;errors.push(`${src.name}: ${e.message||e}`)}
+    }
+  }catch(e){if(e instanceof AuthError)return;errors.push(e.message||String(e))}
+  if(created+updated+st.nfNew+st.nfUpd+st.nfCancel>0){await loadData();refresh();resolveNames()}
   else renderDados();
-  const msg=[created+updated?`${fmtN(created)} pedidos novos, ${fmtN(updated)} atualizados`:'',nfNew+nfUpd?`${fmtN(nfNew)} notas novas, ${fmtN(nfUpd)} atualizadas`:'',nfSkip?`${fmtN(nfSkip)} notas ignoradas (entrada, não autorizadas ou inválidas)`:''].filter(Boolean).join(' · ');
-  toast(errors.length?`Não consegui importar ${errors.join(' · ')}${msg?' · '+msg:''}`:`Importado: ${msg||'nada novo'}.`,errors.length?8000:5000);
+  const msg=[created+updated?`${fmtN(created)} pedidos novos, ${fmtN(updated)} atualizados`:'',
+    st.nfNew+st.nfUpd?`${fmtN(st.nfNew)} notas novas, ${fmtN(st.nfUpd)} atualizadas`:'',
+    st.nfCancel?`${fmtN(st.nfCancel)} notas canceladas`:'',
+    st.nfSkip?`${fmtN(st.nfSkip)} notas de entrada ou não autorizadas ignoradas`:'',
+    st.nfInvalid?`${fmtN(st.nfInvalid)} arquivos que não são NF-e`:''].filter(Boolean).join(' · ');
+  if(st.unreadable.length)errors.unshift(`${fmtN(st.unreadable.length)} arquivos não puderam ser lidos pelo navegador (ex.: ${st.unreadable.slice(0,2).join(', ')}). Arraste a pasta inteira ou um .zip em vez dos arquivos soltos e importe de novo: o que já entrou não duplica`);
+  toast(errors.length?`${errors.slice(0,3).join(' · ')}${errors.length>3?` · e mais ${fmtN(errors.length-3)} erros`:''}${msg?' · Importado: '+msg:''}`:`Importado: ${msg||'nada novo'}.`,errors.length?15000:5000);
 }
 function toast(msg,ms=3500){const t=$('#toast');t.textContent=msg;t.hidden=false;clearTimeout(toast._t);toast._t=setTimeout(()=>t.hidden=true,ms)}
 
@@ -1102,11 +1143,13 @@ $('#pSearch').oninput=e=>{ui.pSearch=e.target.value;clearTimeout(renderProdutos.
 $('#mapMetric').onclick=e=>{const b=e.target.closest('button');if(!b)return;ui.mapMetric=b.dataset.m;$$('#mapMetric button').forEach(x=>x.setAttribute('aria-pressed',x===b));renderPublico()};
 const drop=$('#drop'),fi=$('#fileInput');
 fi.onchange=()=>{if(fi.files.length)importFiles([...fi.files]);fi.value=''};
+$('#folderInput').onchange=e=>{const el=e.target;if(el.files.length)importFiles([...el.files]);el.value=''};
+$('#pickFolder').onclick=e=>{e.preventDefault();e.stopPropagation();$('#folderInput').click()};
 ['dragenter','dragover'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('over')}));
 ['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('over')}));
-drop.addEventListener('drop',e=>{const f=[...(e.dataTransfer?.files||[])];if(f.length)importFiles(f)});
+drop.addEventListener('drop',async e=>{const src=await sourcesFromDrop(e.dataTransfer);if(src.length)importFiles(src)});
 document.addEventListener('dragover',e=>e.preventDefault());
-document.addEventListener('drop',e=>{if(!drop.contains(e.target)){e.preventDefault();const f=[...(e.dataTransfer?.files||[])];if(f.length){showTab('dados');importFiles(f)}}});
+document.addEventListener('drop',async e=>{if(!drop.contains(e.target)){e.preventDefault();const src=await sourcesFromDrop(e.dataTransfer);if(src.length){showTab('dados');importFiles(src)}}});
 $('#btnBackup').onclick=()=>{
   if(state.sample){toast('Ainda não há dados seus para salvar.');return}
   location.href='/api/backup';
