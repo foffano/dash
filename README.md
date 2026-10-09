@@ -3,68 +3,83 @@
 Painel de vendas para quem vende em marketplaces (Shopee, Mercado Livre, TikTok Shop etc.) e usa a **UpSeller**.
 Você exporta os pedidos da UpSeller em planilha, envia pelo painel e ele monta os gráficos e o diagnóstico do negócio.
 
-- Roda na sua VPS, com login e senha.
+- Roda na VPS (prod-01) em Docker, publicado só pelo Cloudflare Tunnel em `https://dash.toffa.com.br`, com login e senha.
 - Os dados ficam no servidor (SQLite) e aparecem em qualquer aparelho em que você entrar.
 - A planilha é lida no navegador. Só os campos usados no painel vão para o servidor: telefone, endereço completo, CPF/CNPJ e dados de nota fiscal são descartados antes.
 - Sem dependências nativas: Node.js 22 + 2 bibliotecas de frontend (Chart.js e SheetJS), servidas pelo próprio app.
 
-## Instalar na VPS com Docker (recomendado)
+## Rodar no seu computador
 
-Pré-requisitos: Docker com o plugin Compose e um domínio (ex.: `vendas.seudominio.com.br`) com registro DNS tipo A apontando para o IP da VPS.
+Requer Node.js 22.13 ou mais novo.
 
 ```bash
-git clone https://github.com/foffano/dash.git raiox && cd raiox
-cp .env.example .env
-nano .env            # defina APP_PASSWORD e DOMAIN
-docker compose --profile https up -d --build
+npm install
+APP_PASSWORD=umasenhaqualquer npm start
 ```
 
-Pronto: acesse `https://SEU_DOMINIO`. O Caddy gera e renova o certificado HTTPS sozinho (as portas 80 e 443 precisam estar livres e liberadas no firewall).
+Abra `http://localhost:3000` e entre com `admin` e a senha acima.
 
-**Já usa nginx ou outro proxy na VPS?** Suba só o app (`docker compose up -d --build`). Ele fica escutando em `127.0.0.1:3000`. Use `deploy/nginx.conf` como modelo e gere o certificado com `certbot --nginx`.
+## Produção (prod-01)
 
-### Atualizar
+Segue o padrão de `/srv/infra` na VPS: sem `ports:`, entrada só pelo `cloudflared` na rede Docker `edge`, versão nova por release do GitHub e volta automática para a anterior se o healthcheck falhar.
+
+| O quê | Onde |
+|---|---|
+| App | `/srv/apps/dash` (`compose.yml`, `.env` com a versão no ar, `app.env` com os segredos, `data/` com o banco) |
+| Imagem | `ghcr.io/foffano/dash:<versão>` |
+| Rota no Cloudflare | Tunnels → prod-01 → Public hostnames: `dash.toffa.com.br` → `http://dash:3000` |
+| Atualizador | `dash-update.timer` (a cada 5 minutos) → `/srv/infra/scripts/dash-update.py` → `deploy.sh` |
+
+### Lançar uma versão
+
+1. Atualize `version` no `package.json` e anote a mudança no `CHANGELOG.md`.
+2. Faça o commit e o push, e publique a release:
+   ```bash
+   gh release create v1.2.0 --generate-notes
+   ```
+3. O GitHub Actions gera a imagem no GHCR. Em até 5 minutos a VPS instala a versão nova.
+
+Use versões no formato `vX.Y.Z` ([SemVer](https://semver.org/lang/pt-BR/)). A versão no ar aparece em `/api/health`.
+
+### Operação
 
 ```bash
-git pull && docker compose --profile https up -d --build
+cd /srv/apps/dash
+docker compose -p dash ps                      # estado
+docker compose -p dash logs -f --tail 100      # logs
+column -t -s $'\t' deploys.log                 # histórico de deploys
+/srv/infra/scripts/rollback.sh dash            # volta para a versão anterior
+sudo /srv/infra/scripts/dash-update.py --tag v1.1.0   # força uma versão
+systemctl status dash-update.service           # última checagem do atualizador
+sudoedit app.env && docker compose -p dash up -d      # trocar usuário ou senha
 ```
 
 ### Backup
 
 - Pelo painel: **Importar dados → Baixar backup** gera um `.json` com todos os pedidos. Para restaurar, envie o arquivo na mesma tela.
-- Pelo servidor: o banco fica no volume Docker `raiox_data`.
-  ```bash
-  docker compose cp app:/data/raiox.db ./raiox-$(date +%F).db
-  ```
+- Pelo servidor: o banco é `/srv/apps/dash/data/raiox.db`.
 
-## Instalar sem Docker
-
-Requer Node.js 22.13 ou mais novo.
+### Instalação inicial (já feita)
 
 ```bash
-git clone https://github.com/foffano/dash.git /opt/raiox && cd /opt/raiox
-npm install --omit=dev
-cp .env.example .env && nano .env
-sudo cp deploy/raiox.service /etc/systemd/system/   # ajuste User e caminhos
-sudo systemctl enable --now raiox
+sudo install -d -o deploy -g deploy -m 2775 /srv/apps/dash
+sudo install -d -o 1000 -g 1000 -m 700 /srv/apps/dash/data
+sudo install -m 660 -o deploy -g deploy /dev/null /srv/apps/dash/app.env   # preencher com deploy/app.env.example
+sudo install -m 755 deploy/dash-update.py /srv/infra/scripts/
+sudo install -m 644 deploy/dash-update.service deploy/dash-update.timer /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now dash-update.timer
 ```
 
-Coloque um proxy com HTTPS na frente (Caddy ou `deploy/nginx.conf`).
-
-Para testar no seu computador: `npm install` e depois `APP_PASSWORD=umasenhaqualquer npm start`, e abra `http://localhost:3000`.
-
-## Configuração (.env)
+## Configuração (app.env)
 
 | Variável | Padrão | Para que serve |
 |---|---|---|
 | `APP_USER` | `admin` | Usuário do login |
 | `APP_PASSWORD` | obrigatória | Senha do login (mínimo 8 caracteres) |
-| `DOMAIN` | | Domínio usado pelo Caddy para o HTTPS |
-| `APP_PORT` | `3000` | Porta local do app na VPS |
 | `SESSION_DAYS` | `30` | Quantos dias o login fica salvo |
-| `COOKIE_SECURE` | automático | `true` força cookie só em HTTPS |
 | `SESSION_SECRET` | gerado | Chave das sessões; se vazia, é criada em `data/.session-secret` |
-| `DATA_DIR` | `./data` | Pasta do banco SQLite |
+
+`COOKIE_SECURE`, `DATA_DIR`, `HOST` e `PORT` já vêm definidos no `deploy/compose.yml`.
 
 ## Como usar
 
@@ -102,6 +117,7 @@ Enquanto nada for importado, o painel mostra **dados de exemplo** fictícios.
 server.js            servidor HTTP, login, API e banco SQLite
 public/              interface (HTML, CSS e JavaScript)
 Dockerfile           imagem do app
-docker-compose.yml   app + Caddy (HTTPS)
-deploy/              Caddyfile, modelo de nginx e serviço systemd
+deploy/              compose de produção, atualizador e timer do systemd, modelo do app.env
+.github/workflows/   release: gera a imagem no GHCR
+CHANGELOG.md         o que mudou em cada versão
 ```

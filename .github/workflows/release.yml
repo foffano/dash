@@ -1,0 +1,76 @@
+# Publicar uma release no GitHub gera a imagem no GHCR e implanta em producao.
+# Para reimplantar uma versao antiga: Actions -> Release -> Run workflow -> tag.
+#
+# No prod-01 quem instala a release e o dash-update.timer: a cada 5
+# minutos ele confere a ultima release e, quando a imagem ja esta no GHCR,
+# chama o deploy.sh (ver deploy/dash-update.py).
+#
+# O passo de deploy abaixo e a alternativa por runner self-hosted; so roda com a
+# variavel DEPLOY_VIA_RUNNER como "true" (Settings -> Actions -> Variables).
+
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Versão já publicada para reimplantar (ex.: v1.1.0)"
+        required: true
+
+concurrency:
+  group: deploy-production-${{ github.repository }}
+  cancel-in-progress: false
+
+env:
+  APP_NAME: dash # pasta em /srv/apps e alias na rede edge
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  build:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - name: Nome da imagem (GHCR exige minúsculas)
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ${{ env.IMAGE }}:${{ env.TAG }}
+          build-args: APP_VERSION=${{ env.TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build
+    if: ${{ vars.DEPLOY_VIA_RUNNER == 'true' && !cancelled() && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    runs-on: [self-hosted, prod-01]
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+      - name: Nome da imagem (GHCR exige minúsculas)
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Deploy
+        run: /srv/infra/scripts/deploy.sh "$APP_NAME" "$IMAGE" "$TAG" deploy/compose.yml

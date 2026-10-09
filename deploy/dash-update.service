@@ -1,0 +1,11 @@
+[Unit]
+Description=Instala a ultima release estavel do Raio-X de Vendas (imagem do GHCR)
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /srv/infra/scripts/dash-update.py
+TimeoutStartSec=15min
+Nice=10

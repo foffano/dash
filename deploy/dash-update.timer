@@ -1,0 +1,11 @@
+[Unit]
+Description=Confere releases do Raio-X de Vendas a cada cinco minutos
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+RandomizedDelaySec=30s
+Unit=dash-update.service
+
+[Install]
+WantedBy=timers.target

@@ -1,6 +1,6 @@
 {
   "name": "raiox-vendas",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "Painel de vendas para marketplaces a partir das planilhas exportadas da UpSeller",
   "main": "server.js",

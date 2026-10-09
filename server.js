@@ -19,6 +19,7 @@ const COOKIE_SECURE = process.env.COOKIE_SECURE; // 'true' | 'false' | indefinid
 const SESSION_DAYS = +(process.env.SESSION_DAYS || 30);
 const MAX_BODY = 32 * 1024 * 1024;
 const PUBLIC_DIR = path.join(__dirname, 'public');
+const VERSION = process.env.APP_VERSION || 'v' + require('./package.json').version;
 
 if (!APP_PASSWORD || APP_PASSWORD.length < 8) {
   console.error('Defina APP_PASSWORD (mínimo 8 caracteres) no arquivo .env antes de iniciar.');
@@ -137,7 +138,18 @@ function readJson(req) {
 function sameOrigin(req) {
   const origin = req.headers.origin;
   if (!origin) return true;
-  try { return new URL(origin).host === req.headers.host; } catch { return false; }
+  try {
+    const host = new URL(origin).host;
+    return host === req.headers.host || host === req.headers['x-forwarded-host'];
+  } catch { return false; }
+}
+// IP real do visitante. Atrás do Cloudflare vem em CF-Connecting-IP (o Cloudflare sobrescreve,
+// então o visitante não consegue forjar); o primeiro item do X-Forwarded-For pode ser forjado.
+function clientIp(req) {
+  const cf = req.headers['cf-connecting-ip'];
+  if (cf) return cf.trim();
+  const xff = (req.headers['x-forwarded-for'] || '').split(',').map(s => s.trim()).filter(Boolean);
+  return xff.at(-1) || req.socket.remoteAddress;
 }
 // Lista de pedidos em streaming, para não montar uma string gigante na memória.
 function streamOrders(req, res, { wrap = false } = {}) {
@@ -187,7 +199,7 @@ async function api(req, res, pathname) {
   if (m !== 'GET' && m !== 'HEAD' && !sameOrigin(req)) return json(req, res, 403, { error: 'Origem não permitida.' });
 
   if (pathname === '/api/login' && m === 'POST') {
-    const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress;
+    const ip = clientIp(req);
     if (rateLimited(ip)) return json(req, res, 429, { error: 'Muitas tentativas. Aguarde 15 minutos.' });
     const { user, password } = await readJson(req);
     if (!checkLogin(String(user || ''), String(password || ''))) return json(req, res, 401, { error: 'Usuário ou senha incorretos.' });
@@ -242,6 +254,7 @@ const server = http.createServer(async (req, res) => {
   const { pathname } = new URL(req.url, 'http://x');
   try {
     if (pathname === '/healthz') return send(req, res, 200, 'ok', 'text/plain; charset=utf-8');
+    if (pathname === '/api/health') { db.prepare('SELECT 1').get(); return json(req, res, 200, { ok: true, version: VERSION }); }
     if (pathname.startsWith('/api/')) return await api(req, res, pathname);
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(req, res, 405, 'Método não permitido', 'text/plain; charset=utf-8');
     return serveStatic(req, res, pathname);
@@ -252,7 +265,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 server.requestTimeout = 5 * 60e3;
-server.listen(PORT, HOST, () => console.log(`Raio-X de Vendas em http://${HOST}:${PORT} (dados em ${DATA_DIR})`));
+server.listen(PORT, HOST, () => console.log(`Raio-X de Vendas ${VERSION} em http://${HOST}:${PORT} (dados em ${DATA_DIR})`));
 const shutdown = () => server.close(() => { db.close(); process.exit(0); });
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);

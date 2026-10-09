@@ -1,0 +1,49 @@
+# Compose de produção do Raio-X de Vendas (padrão do /srv/infra no prod-01).
+# O deploy.sh copia este arquivo para /srv/apps/dash/compose.yml e escreve
+# IMAGE e IMAGE_TAG no .env de lá.
+#
+# Antes do primeiro deploy, na VPS:
+#   sudo install -d -o deploy -g deploy -m 2775 /srv/apps/dash
+#   sudo install -d -o 1000 -g 1000 -m 700 /srv/apps/dash/data
+#   sudo install -m 660 -o deploy -g deploy /dev/null /srv/apps/dash/app.env
+#   # e em app.env: APP_USER e APP_PASSWORD (ver deploy/app.env.example)
+services:
+  web:
+    image: ${IMAGE:?}:${IMAGE_TAG:?}
+    init: true
+    restart: unless-stopped
+    # O container roda como "node" (uid 1000), então data/ no host precisa ser
+    # desse uid. Se não for, o app não abre o banco e falha no healthcheck.
+    user: "1000:1000"
+    env_file: app.env
+    environment:
+      HOST: 0.0.0.0
+      PORT: "3000"
+      DATA_DIR: /app/data
+      # Tudo chega por HTTPS pela Cloudflare: o cookie de login só viaja cifrado.
+      COOKIE_SECURE: "true"
+    volumes:
+      - ./data:/app/data
+    networks:
+      default:
+      edge:
+        aliases: [dash] # na Cloudflare: http://dash:3000
+    # É o healthcheck que diz ao deploy.sh se a versão nova serve ou se volta a anterior.
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+    mem_limit: 512m
+    cpus: 1
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    # Sem "ports:". A entrada é só pelo Cloudflare Tunnel, pela rede edge.
+
+networks:
+  edge:
+    external: true
