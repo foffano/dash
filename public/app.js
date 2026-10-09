@@ -1,392 +1,3 @@
-<!doctype html>
-<html lang="pt-BR">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Raio-X de Vendas</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
-<style>
-/* Layout: painel operacional — cabeçalho fixo com filtros, abas por pergunta de negócio, cartões em grade fluida */
-:root{
-  --bg:#f4f5f3; --surface:#ffffff; --surface-2:#eceeeb; --line:#dcdfdb; --grid:rgba(20,24,22,.07);
-  --fg:#151816; --fg-2:#4a504c; --fg-3:#7b817d; --on-accent:#ffffff;
-  --accent:#2a78d6; --accent-soft:rgba(42,120,214,.11); --heat:42,120,214;
-  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4; --s6:#008300; --s7:#4a3aa7; --s8:#e34948;
-  --good:#1b7a43; --good-bg:rgba(27,122,67,.10); --warn:#9a6200; --warn-bg:rgba(201,133,0,.13);
-  --crit:#b9332b; --crit-bg:rgba(185,51,43,.10); --info:#2a6fc2; --info-bg:rgba(42,120,214,.09);
-  --font:"Instrument Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --mono:"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --r:10px;
-}
-@media (prefers-color-scheme: dark){
-  :root:not([data-theme="light"]){
-    --bg:#111312; --surface:#191c1a; --surface-2:#222623; --line:#2d322f; --grid:rgba(240,244,241,.07);
-    --fg:#f1f3f1; --fg-2:#b6bcb8; --fg-3:#858b87; --on-accent:#ffffff;
-    --accent:#3987e5; --accent-soft:rgba(57,135,229,.16); --heat:57,135,229;
-    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
-    --good:#4cc07a; --good-bg:rgba(76,192,122,.13); --warn:#e0a63a; --warn-bg:rgba(224,166,58,.14);
-    --crit:#ef7067; --crit-bg:rgba(239,112,103,.13); --info:#6ea8ef; --info-bg:rgba(57,135,229,.15);
-    color-scheme:dark;
-  }
-}
-:root[data-theme="dark"]{
-  --bg:#111312; --surface:#191c1a; --surface-2:#222623; --line:#2d322f; --grid:rgba(240,244,241,.07);
-  --fg:#f1f3f1; --fg-2:#b6bcb8; --fg-3:#858b87; --on-accent:#ffffff;
-  --accent:#3987e5; --accent-soft:rgba(57,135,229,.16); --heat:57,135,229;
-  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
-  --good:#4cc07a; --good-bg:rgba(76,192,122,.13); --warn:#e0a63a; --warn-bg:rgba(224,166,58,.14);
-  --crit:#ef7067; --crit-bg:rgba(239,112,103,.13); --info:#6ea8ef; --info-bg:rgba(57,135,229,.15);
-  color-scheme:dark;
-}
-*{box-sizing:border-box}
-[hidden]{display:none!important}
-html,body{background:var(--bg)}
-body{margin:0;color:var(--fg);font-family:var(--font);font-size:14px;line-height:1.45;-webkit-font-smoothing:antialiased}
-h1,h2,h3{margin:0;text-wrap:balance}
-button,select,input{font:inherit;color:inherit}
-:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.wrap{max-width:1320px;margin:0 auto;padding-inline:16px}
-@media (min-width:760px){.wrap{padding-inline:28px}}
-.num,.kv,td.n{font-variant-numeric:tabular-nums}
-
-/* Cabeçalho */
-.top{position:relative;top:env(safe-area-inset-top,0px);z-index:20;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
-@media (min-width:760px) and (min-height:600px){.top{position:sticky}}
-.top-in{display:flex;flex-wrap:wrap;gap:12px 24px;align-items:center;justify-content:space-between;padding-block:12px 10px}
-.brand{display:flex;gap:10px;align-items:center;min-width:0}
-.brand svg{flex:none}
-.brand h1{font-size:17px;font-weight:700;letter-spacing:-.01em}
-.brand p{margin:0;color:var(--fg-3);font-size:12px}
-.filters{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-.fl{display:flex;flex-direction:column;gap:2px}
-.fl span{font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--fg-3);font-weight:600}
-select,input[type=date],input[type=search]{background:var(--surface);border:1px solid var(--line);border-radius:7px;padding:6px 9px;min-height:34px;max-width:100%}
-select{padding-right:26px}
-.tabs{display:flex;gap:2px;overflow-x:auto;scrollbar-width:none}
-.tabs::-webkit-scrollbar{display:none}
-.tab-btn{background:none;border:0;padding:9px 12px 10px;color:var(--fg-2);font-weight:600;font-size:13.5px;cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap}
-.tab-btn:hover{color:var(--fg)}
-.tab-btn[aria-selected="true"]{color:var(--fg);border-bottom-color:var(--accent)}
-.tab-btn .badge{display:inline-block;min-width:18px;padding:0 5px;margin-left:4px;border-radius:9px;background:var(--crit-bg);color:var(--crit);font-size:11px;line-height:18px;text-align:center}
-
-/* Faixa de exemplo */
-.banner{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-block:14px 0;padding:10px 14px;border-radius:var(--r);background:var(--warn-bg);color:var(--fg)}
-.banner b{color:var(--warn)}
-
-main{padding-block:18px 60px}
-.tab{display:flex;flex-direction:column;gap:16px}
-.sec-head{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:baseline;justify-content:space-between}
-.sec-head h2{font-size:20px;letter-spacing:-.015em}
-.sec-head p{margin:0;color:var(--fg-3);font-size:13px}
-.grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(min(100%,380px),1fr))}
-.grid.g3{grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr))}
-.span2{grid-column:1/-1}
-@media (min-width:1100px){.span2-lg{grid-column:span 2}}
-.panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:16px;min-width:0}
-.ph{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:baseline;justify-content:space-between;margin-bottom:12px}
-.ph h3{font-size:14.5px;font-weight:650}
-.ph .sub,.muted{color:var(--fg-3);font-size:12.5px}
-.chart{position:relative;height:260px}
-.chart.h320{height:320px}.chart.h200{height:200px}.chart.h360{height:360px}
-.seg{display:inline-flex;border:1px solid var(--line);border-radius:7px;overflow:hidden}
-.seg button{background:var(--surface);border:0;padding:4px 10px;font-size:12.5px;cursor:pointer;color:var(--fg-2)}
-.seg button+button{border-left:1px solid var(--line)}
-.seg button[aria-pressed="true"]{background:var(--accent-soft);color:var(--fg);font-weight:600}
-
-/* KPIs */
-.kpis{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(min(100%,158px),1fr))}
-.kpi{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:12px 14px;display:flex;flex-direction:column;gap:3px;min-width:0}
-.kl{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--fg-3);font-weight:600}
-.kv{font-family:var(--mono);font-size:21px;font-weight:500;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.kd{display:flex;gap:6px;align-items:center;font-size:12px;color:var(--fg-3);min-height:18px;flex-wrap:wrap}
-.delta{font-weight:600;font-variant-numeric:tabular-nums}
-.delta.up{color:var(--good)}.delta.down{color:var(--crit)}.delta.flat{color:var(--fg-3)}
-
-/* Listas de barras */
-.bars{display:flex;flex-direction:column;gap:9px}
-.bar-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;align-items:baseline}
-.bar-row .bl{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px}
-.bar-row .bv{font-family:var(--mono);font-size:12.5px;text-align:right;white-space:nowrap}
-.bar-row .bv small{color:var(--fg-3);font-family:var(--font);margin-left:6px}
-.bar-track{grid-column:1/-1;height:6px;border-radius:3px;background:var(--surface-2);overflow:hidden}
-.bar-fill{height:100%;border-radius:3px;background:var(--accent)}
-.dot{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:7px;vertical-align:0}
-
-/* Tabelas */
-.tbl-wrap{overflow-x:auto;margin-inline:-4px}
-table{border-collapse:collapse;width:100%;font-size:13px}
-th,td{padding:7px 8px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
-td.wrap-cell{white-space:normal;min-width:200px;max-width:380px}
-th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--fg-3);font-weight:600;position:sticky;top:0;background:var(--surface)}
-th.n,td.n{text-align:right;font-family:var(--mono);font-size:12.5px}
-th button{all:unset;cursor:pointer}
-th button:focus-visible{outline:2px solid var(--accent)}
-th[aria-sort] button::after{content:" ↓";color:var(--accent)}
-th[aria-sort="ascending"] button::after{content:" ↑"}
-tbody tr:hover{background:var(--surface-2)}
-.tbl-foot{margin-top:8px;color:var(--fg-3);font-size:12px}
-.pill{display:inline-block;padding:1px 7px;border-radius:9px;font-size:11.5px;font-weight:600;font-family:var(--font)}
-.pill.A{background:var(--good-bg);color:var(--good)}.pill.B{background:var(--warn-bg);color:var(--warn)}.pill.C{background:var(--surface-2);color:var(--fg-3)}
-.neg{color:var(--crit)}.pos{color:var(--good)}
-
-/* Diagnóstico */
-.ins-summary{display:flex;flex-wrap:wrap;gap:8px}
-.chip{display:inline-flex;gap:6px;align-items:center;padding:5px 11px;border-radius:16px;font-size:12.5px;font-weight:600;border:1px solid var(--line);background:var(--surface);cursor:pointer;color:var(--fg-2)}
-.chip[aria-pressed="true"]{background:var(--fg);color:var(--bg);border-color:var(--fg)}
-.ins-list{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr))}
-.ins{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:14px 16px 14px 14px;display:grid;align-content:start;grid-template-columns:auto 1fr;gap:4px 12px}
-.ins .ic{grid-row:1/4;width:28px;height:28px;border-radius:8px;display:grid;place-items:center;font-weight:700;font-size:14px}
-.ins.crit .ic{background:var(--crit-bg);color:var(--crit)}.ins.warn .ic{background:var(--warn-bg);color:var(--warn)}
-.ins.good .ic{background:var(--good-bg);color:var(--good)}.ins.info .ic{background:var(--info-bg);color:var(--info)}
-.ins .area{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--fg-3);font-weight:600}
-.ins .area b{font-weight:700}
-.ins.crit .area b{color:var(--crit)}.ins.warn .area b{color:var(--warn)}.ins.good .area b{color:var(--good)}.ins.info .area b{color:var(--info)}
-.ins h3{font-size:15px;font-weight:650}
-.ins p{margin:0;color:var(--fg-2);font-size:13.5px;max-width:68ch}
-.ins p strong{color:var(--fg)}
-
-/* Mapa de blocos e heatmap */
-.tilemap{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;max-width:440px;margin-inline:auto}
-.tile{aspect-ratio:1;border-radius:6px;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:12px;font-weight:700;background:var(--surface-2);color:var(--fg-2);cursor:default;border:0;padding:0;max-width:100%}
-.tile small{font-weight:500;font-size:9.5px;font-family:var(--mono);opacity:.85}
-.tile:hover,.tile:focus-visible{outline:2px solid var(--fg);outline-offset:1px}
-.legend-scale{display:flex;align-items:center;gap:8px;justify-content:center;margin-top:10px;font-size:11.5px;color:var(--fg-3)}
-.legend-scale i{display:block;width:120px;height:8px;border-radius:4px;background:linear-gradient(90deg,rgba(var(--heat),.08),rgba(var(--heat),1))}
-.heat{display:grid;grid-template-columns:34px repeat(24,minmax(14px,1fr));gap:2px;min-width:520px}
-.heat .hc{aspect-ratio:1.3;border-radius:3px;background:var(--surface-2)}
-.heat .hc:hover{outline:2px solid var(--fg)}
-.heat .hl{font-size:11px;color:var(--fg-3);display:flex;align-items:center}
-.heat .hh{font-size:10px;color:var(--fg-3);text-align:center;font-family:var(--mono)}
-#tip{position:fixed;z-index:50;pointer-events:none;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12.5px;box-shadow:0 6px 24px rgba(0,0,0,.14);max-width:260px}
-#tip b{display:block;font-family:var(--mono);font-size:14px;font-weight:500}
-
-/* Waterfall */
-.wf{display:flex;flex-direction:column;gap:7px}
-.wf-row{display:grid;grid-template-columns:minmax(120px,190px) 1fr minmax(92px,auto);gap:10px;align-items:center;font-size:13px}
-.wf-row .wv{font-family:var(--mono);text-align:right;font-size:12.5px}
-.wf-track{position:relative;height:18px}
-.wf-bar{position:absolute;top:0;height:100%;border-radius:4px}
-.wf-row.total .wl{font-weight:650}
-@media (max-width:520px){.wf-row{grid-template-columns:1fr auto}.wf-track{grid-column:1/-1;grid-row:2}}
-
-/* Dados */
-.drop{border:1.5px dashed var(--line);border-radius:var(--r);padding:28px 18px;text-align:center;background:var(--surface);display:flex;flex-direction:column;gap:10px;align-items:center;transition:border-color .15s, background .15s}
-.drop.over{border-color:var(--accent);background:var(--accent-soft)}
-.drop h3{font-size:16px}
-.drop p{margin:0;color:var(--fg-2);max-width:60ch}
-.btn{display:inline-flex;gap:6px;align-items:center;justify-content:center;border-radius:8px;padding:8px 14px;border:1px solid var(--line);background:var(--surface);cursor:pointer;font-weight:600;font-size:13.5px}
-.btn:hover{background:var(--surface-2)}
-.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
-.btn.primary:hover{filter:brightness(1.07)}
-.btn.danger{color:var(--crit)}
-.btn.danger.armed{background:var(--crit);border-color:var(--crit);color:#fff}
-.row-btns{display:flex;flex-wrap:wrap;gap:8px}
-.checklist{columns:2 220px;column-gap:24px;margin:0;padding-left:18px;color:var(--fg-2);font-size:13px}
-.checklist li{break-inside:avoid;margin-bottom:3px}
-.checklist li b{color:var(--fg);font-weight:600}
-.toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:10px 16px;border-radius:9px;font-weight:600;font-size:13.5px;z-index:60;max-width:calc(100% - 32px);box-shadow:0 8px 30px rgba(0,0,0,.2)}
-.empty{padding:28px;text-align:center;color:var(--fg-3)}
-.note{font-size:12.5px;color:var(--fg-3);margin:0}
-.kv-list{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:13px;margin:0}
-.kv-list dt{color:var(--fg-3)}.kv-list dd{margin:0;font-family:var(--mono);text-align:right}
-@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
-</style>
-</head>
-<body>
-<header class="top">
-  <div class="wrap top-in">
-    <div class="brand">
-      <svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><rect width="30" height="30" rx="8" fill="var(--accent)"/><rect x="7" y="16" width="3.4" height="7" rx="1.2" fill="var(--on-accent)"/><rect x="13.3" y="11" width="3.4" height="12" rx="1.2" fill="var(--on-accent)"/><rect x="19.6" y="7" width="3.4" height="16" rx="1.2" fill="var(--on-accent)"/></svg>
-      <div><h1>Raio-X de Vendas</h1><p id="dataInfo">Carregando…</p></div>
-    </div>
-    <div class="filters" role="group" aria-label="Filtros">
-      <label class="fl"><span>Período</span>
-        <select id="fPeriod">
-          <option value="7">Últimos 7 dias</option>
-          <option value="30">Últimos 30 dias</option>
-          <option value="90" selected>Últimos 90 dias</option>
-          <option value="180">Últimos 6 meses</option>
-          <option value="365">Últimos 12 meses</option>
-          <option value="ytd">Este ano</option>
-          <option value="all">Todo o histórico</option>
-          <option value="custom">Personalizado…</option>
-        </select></label>
-      <span id="customRange" class="filters" hidden>
-        <label class="fl"><span>De</span><input type="date" id="fFrom"></label>
-        <label class="fl"><span>Até</span><input type="date" id="fTo"></label>
-      </span>
-      <label class="fl"><span>Plataforma</span><select id="fPlatform"></select></label>
-      <label class="fl"><span>Loja</span><select id="fStore"></select></label>
-    </div>
-  </div>
-  <nav class="wrap tabs" id="tabs" role="tablist" aria-label="Seções">
-    <button class="tab-btn" role="tab" data-tab="geral">Visão geral</button>
-    <button class="tab-btn" role="tab" data-tab="diagnostico">Diagnóstico <span class="badge" id="diagBadge" hidden></span></button>
-    <button class="tab-btn" role="tab" data-tab="produtos">Produtos</button>
-    <button class="tab-btn" role="tab" data-tab="publico">Público</button>
-    <button class="tab-btn" role="tab" data-tab="comportamento">Quando compram</button>
-    <button class="tab-btn" role="tab" data-tab="financeiro">Financeiro</button>
-    <button class="tab-btn" role="tab" data-tab="operacao">Operação</button>
-    <button class="tab-btn" role="tab" data-tab="dados">Dados</button>
-  </nav>
-</header>
-
-<div class="wrap"><div class="banner" id="sampleBanner" hidden>
-  <span><b>Dados de exemplo.</b> Os números abaixo são fictícios, só para mostrar o painel funcionando. Importe as planilhas da UpSeller para ver o seu negócio.</span>
-  <button class="btn primary" data-go="dados">Importar minhas planilhas</button>
-</div></div>
-
-<main class="wrap">
-  <!-- VISÃO GERAL -->
-  <section class="tab" id="tab-geral" role="tabpanel" hidden>
-    <div class="sec-head"><h2>Visão geral</h2><p id="cmpLbl"></p></div>
-    <div class="kpis" id="kpis"></div>
-    <div class="grid">
-      <div class="panel span2">
-        <div class="ph"><h3>Faturamento e lucro estimado</h3><span class="sub" id="granLbl"></span></div>
-        <div class="chart h320"><canvas id="cTimeline" aria-label="Faturamento e lucro por período"></canvas></div>
-      </div>
-      <div class="panel"><div class="ph"><h3>Pedidos válidos</h3><span class="sub">por período</span></div><div class="chart"><canvas id="cOrders"></canvas></div></div>
-      <div class="panel"><div class="ph"><h3>Faturamento por plataforma</h3><span class="sub">participação</span></div><div id="platList" class="bars"></div><div id="storeBox"></div></div>
-      <div class="panel"><div class="ph"><h3>Produtos que mais faturam</h3><button class="btn" data-go="produtos" style="padding:3px 10px;font-size:12px">Ver todos</button></div><div id="topProd" class="bars"></div></div>
-      <div class="panel"><div class="ph"><h3>Estados que mais compram</h3><button class="btn" data-go="publico" style="padding:3px 10px;font-size:12px">Ver público</button></div><div id="topUF" class="bars"></div></div>
-    </div>
-  </section>
-
-  <!-- DIAGNÓSTICO -->
-  <section class="tab" id="tab-diagnostico" role="tabpanel" hidden>
-    <div class="sec-head"><h2>Diagnóstico do negócio</h2><p>Leituras automáticas sobre o período e os filtros selecionados.</p></div>
-    <div class="ins-summary" id="insFilter"></div>
-    <div class="ins-list" id="insList"></div>
-  </section>
-
-  <!-- PRODUTOS -->
-  <section class="tab" id="tab-produtos" role="tabpanel" hidden>
-    <div class="sec-head"><h2>Produtos</h2>
-      <div class="filters">
-        <label class="fl"><span>Agrupar por</span><select id="pGroup"><option value="sku">SKU do anúncio</option><option value="name">Nome do anúncio</option><option value="var">Anúncio + variação</option></select></label>
-        <label class="fl"><span>Curva</span><select id="pCurve"><option value="">Todas</option><option value="A">A</option><option value="B">B</option><option value="C">C</option></select></label>
-        <label class="fl"><span>Buscar</span><input type="search" id="pSearch" placeholder="nome ou SKU"></label>
-      </div>
-    </div>
-    <div class="kpis" id="abcTiles"></div>
-    <div class="grid">
-      <div class="panel"><div class="ph"><h3>Top 10 por faturamento</h3><span class="sub">lucro estimado em destaque</span></div><div class="chart h360"><canvas id="cTopProd"></canvas></div></div>
-      <div class="panel"><div class="ph"><h3>Curva ABC</h3><span class="sub">% acumulado do faturamento</span></div><div class="chart h360"><canvas id="cAbc"></canvas></div></div>
-      <div class="panel span2"><div class="ph"><h3>Todos os produtos</h3><span class="sub">clique no título da coluna para ordenar</span></div><div class="tbl-wrap" id="prodTable"></div></div>
-      <div class="panel"><div class="ph"><h3>Comprados juntos</h3><span class="sub">pares mais frequentes no mesmo pedido</span></div><div id="pairs"></div></div>
-      <div class="panel"><div class="ph"><h3>Em alta e em queda</h3><span class="sub">últimos 30 dias vs. 30 anteriores</span></div><div id="trends"></div></div>
-    </div>
-  </section>
-
-  <!-- PÚBLICO -->
-  <section class="tab" id="tab-publico" role="tabpanel" hidden>
-    <div class="sec-head"><h2>Quem é o seu público</h2><p>Clientes identificados por ID ou nome do comprador.</p></div>
-    <div class="kpis" id="custKpis"></div>
-    <div class="grid">
-      <div class="panel"><div class="ph"><h3>Mapa de vendas</h3>
-        <div class="seg" id="mapMetric"><button data-m="rev" aria-pressed="true">Faturamento</button><button data-m="n">Pedidos</button><button data-m="ticket">Ticket</button><button data-m="idx">Penetração</button></div></div>
-        <div class="tilemap" id="tilemap"></div>
-        <div class="legend-scale"><span>menos</span><i></i><span>mais</span></div>
-        <p class="note" id="mapNote" style="margin-top:8px;text-align:center"></p>
-      </div>
-      <div class="panel"><div class="ph"><h3>Por região</h3><span class="sub">participação no faturamento</span></div><div id="regions" class="bars"></div>
-        <div class="ph" style="margin-top:20px"><h3>Cidades que mais compram</h3></div><div id="cities" class="bars"></div></div>
-      <div class="panel span2"><div class="ph"><h3>Estados</h3><span class="sub">penetração = participação nos pedidos ÷ participação na população (IBGE 2022). Acima de 1 = compra mais que a média.</span></div><div class="tbl-wrap" id="ufTable"></div></div>
-      <div class="panel"><div class="ph"><h3>Clientes novos e recorrentes</h3><span class="sub">clientes por mês</span></div><div class="chart"><canvas id="cNewRet"></canvas></div></div>
-      <div class="panel"><div class="ph"><h3>Frequência de compra</h3><span class="sub">pedidos por cliente (histórico)</span></div><div class="chart"><canvas id="cFreq"></canvas></div></div>
-      <div class="panel"><div class="ph"><h3>Faixa de valor do pedido</h3><span class="sub">quanto cada cliente gasta por compra</span></div><div class="chart"><canvas id="cTicketHist"></canvas></div></div>
-      <div class="panel"><div class="ph"><h3>Itens por pedido</h3><span class="sub">unidades na mesma compra</span></div><div class="chart"><canvas id="cBasket"></canvas></div></div>
-      <div class="panel span2"><div class="ph"><h3>Melhores clientes</h3><span class="sub">no período, com histórico completo</span></div><div class="tbl-wrap" id="custTable"></div></div>
-    </div>
-  </section>
-
-  <!-- COMPORTAMENTO -->
-  <section class="tab" id="tab-comportamento" role="tabpanel" hidden>
-    <div class="sec-head"><h2>Quando o seu cliente compra</h2><p>Use para programar promoções, cupons, lives e anúncios.</p></div>
-    <div class="grid">
-      <div class="panel span2"><div class="ph"><h3>Dia da semana × hora do pedido</h3><span class="sub" id="heatSub">pedidos válidos</span></div><div class="tbl-wrap"><div class="heat" id="heat"></div></div></div>
-      <div class="panel"><div class="ph"><h3>Por dia da semana</h3><span class="sub">média de faturamento por dia</span></div><div class="chart"><canvas id="cWeekday"></canvas></div></div>
-      <div class="panel"><div class="ph"><h3>Por hora do dia</h3><span class="sub">pedidos válidos</span></div><div class="chart"><canvas id="cHour"></canvas></div></div>
-      <div class="panel span2"><div class="ph"><h3>Por dia do mês</h3><span class="sub">média de faturamento por dia — mostra o efeito do salário</span></div><div class="chart"><canvas id="cDom"></canvas></div></div>
-    </div>
-  </section>
-
-  <!-- FINANCEIRO -->
-  <section class="tab" id="tab-financeiro" role="tabpanel" hidden>
-    <div class="sec-head"><h2>Para onde vai o dinheiro</h2><p>Valores de pedidos válidos no período.</p></div>
-    <div class="kpis" id="finKpis"></div>
-    <div class="grid">
-      <div class="panel span2"><div class="ph"><h3>Do valor dos produtos ao lucro</h3><span class="sub">soma do período</span></div><div class="wf" id="waterfall"></div><p class="note" id="wfNote" style="margin-top:10px"></p></div>
-      <div class="panel span2"><div class="ph"><h3>Rentabilidade por plataforma</h3><span class="sub">% sobre o valor dos produtos</span></div><div class="tbl-wrap" id="platTable"></div></div>
-      <div class="panel"><div class="ph"><h3>Margem estimada por mês</h3></div><div class="chart"><canvas id="cMargin"></canvas></div></div>
-      <div class="panel"><div class="ph"><h3>Pedidos com prejuízo</h3><span class="sub">piores do período</span></div><div class="tbl-wrap" id="negTable"></div></div>
-    </div>
-  </section>
-
-  <!-- OPERAÇÃO -->
-  <section class="tab" id="tab-operacao" role="tabpanel" hidden>
-    <div class="sec-head"><h2>Operação e logística</h2><p>Cancelamentos, prazos e envio.</p></div>
-    <div class="kpis" id="opsKpis"></div>
-    <div class="grid">
-      <div class="panel"><div class="ph"><h3>Situação dos pedidos</h3><span class="sub">todos os pedidos do período</span></div><div id="statusList" class="bars"></div></div>
-      <div class="panel"><div class="ph"><h3>Motivos de cancelamento</h3></div><div id="reasonList" class="bars"></div><div id="cancelByBox"></div></div>
-      <div class="panel"><div class="ph"><h3>Tempo do pagamento ao envio</h3><span class="sub">pedidos enviados</span></div><div class="chart"><canvas id="cHandling"></canvas></div></div>
-      <div class="panel"><div class="ph"><h3>Métodos de envio</h3><span class="sub">pedidos válidos</span></div><div id="shipList" class="bars"></div></div>
-      <div class="panel span2"><div class="ph"><h3>Cancelamento por plataforma e produto</h3></div><div class="tbl-wrap" id="cancelTable"></div></div>
-    </div>
-  </section>
-
-  <!-- DADOS -->
-  <section class="tab" id="tab-dados" role="tabpanel" hidden>
-    <div class="sec-head"><h2>Dados</h2><p>Os arquivos são lidos no seu navegador. Nada é enviado para servidores.</p></div>
-    <label class="drop" id="drop">
-      <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M12 18v-6"/><path d="m9 15 3-3 3 3"/></svg>
-      <h3>Arraste as planilhas exportadas da UpSeller</h3>
-      <p>Aceita .xlsx, .xls e .csv (vários de uma vez) e backups .json deste painel. Pode importar quantas vezes quiser: pedidos repetidos são atualizados, não duplicados.</p>
-      <span class="btn primary">Escolher arquivos</span>
-      <input type="file" id="fileInput" multiple accept=".xlsx,.xls,.csv,.txt,.json" hidden>
-    </label>
-    <div class="grid">
-      <div class="panel"><div class="ph"><h3>Base atual</h3></div><dl class="kv-list" id="baseStats"></dl>
-        <div class="row-btns" style="margin-top:14px">
-          <button class="btn" id="btnBackup">Baixar backup (.json)</button>
-          <button class="btn danger" id="btnClear">Apagar todos os dados</button>
-        </div>
-        <p class="note" id="storageNote" style="margin-top:10px"></p>
-      </div>
-      <div class="panel"><div class="ph"><h3>Importações</h3></div><div class="tbl-wrap" id="importLog"></div></div>
-      <div class="panel span2"><div class="ph"><h3>Quais colunas marcar na exportação da UpSeller</h3><span class="sub">quanto mais colunas, mais completo o diagnóstico</span></div>
-        <ul class="checklist">
-          <li><b>Nº de Pedido da Plataforma</b> e <b>Nº de Pedido</b> (obrigatórios, evitam duplicação)</li>
-          <li><b>Plataformas</b>, <b>Nome da Loja no UpSeller</b></li>
-          <li><b>Estado do Pedido</b>, <b>Pós-venda/Cancelado/Devolvido</b></li>
-          <li><b>Hora do Pedido</b>, <b>Hora do Pagamento</b>, <b>Hora de Envio</b>, <b>Prazo de Envio</b></li>
-          <li><b>Valor do Pedido</b>, <b>Valor Total de Produtos</b></li>
-          <li><b>Descontos e Cupons</b>, <b>Comissão Total</b></li>
-          <li><b>Frete do Comprador</b>, <b>Total de Frete</b></li>
-          <li><b>Lucro Estimado</b></li>
-          <li><b>Cancelado por</b>, <b>Razão do Cancelamento</b></li>
-          <li><b>Nome do Anúncio</b>, <b>ID do Anúncio</b>, <b>SKU</b>, <b>Variação</b></li>
-          <li><b>Preço de Produto</b>, <b>Qtd. do Produto</b></li>
-          <li><b>SKU (Armazém)</b>, <b>Quantidade de Produtos</b>, <b>Custo do Produto</b> ou <b>Custo Médio</b></li>
-          <li><b>Nome de Comprador</b>, <b>ID do Comprador</b></li>
-          <li><b>Cidade</b>, <b>Estado</b>, <b>CEP</b>, <b>Bairro</b></li>
-          <li><b>Método de Envio</b></li>
-        </ul>
-        <p class="note" style="margin-top:10px">Telefone, endereço completo, CPF/CNPJ e dados de nota fiscal não são usados nem guardados, mesmo que estejam na planilha.</p>
-      </div>
-    </div>
-  </section>
-</main>
-<div id="tip" hidden></div>
-<div class="toast" id="toast" hidden></div>
-
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script>
 'use strict';
 /* ================= utilidades ================= */
 const $=(s,r=document)=>r.querySelector(s);
@@ -595,20 +206,19 @@ function enrich(o){
   return o;
 }
 
-/* ================= armazenamento local ================= */
-const DB={
-  db:null,
-  open(){return new Promise((res,rej)=>{let r;try{r=indexedDB.open('raiox-vendas',1)}catch(e){return rej(e)}
-    r.onupgradeneeded=()=>{const d=r.result;d.createObjectStore('orders',{keyPath:'key'});d.createObjectStore('imports',{keyPath:'id',autoIncrement:true})};
-    r.onsuccess=()=>{this.db=r.result;res()};r.onerror=()=>rej(r.error);r.onblocked=()=>rej(new Error('blocked'))})},
-  all(store){if(!this.db)return Promise.resolve([]);return new Promise((res,rej)=>{const q=this.db.transaction(store).objectStore(store).getAll();q.onsuccess=()=>res(q.result);q.onerror=()=>rej(q.error)})},
-  put(store,items){if(!this.db||!items.length)return Promise.resolve();return new Promise((res,rej)=>{const tx=this.db.transaction(store,'readwrite');const os=tx.objectStore(store);for(const i of items)os.put(i);tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error)})},
-  clear(){if(!this.db)return Promise.resolve();return new Promise((res,rej)=>{const tx=this.db.transaction(['orders','imports'],'readwrite');tx.objectStore('orders').clear();tx.objectStore('imports').clear();tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error)})}
-};
+/* ================= servidor ================= */
+class AuthError extends Error{}
+async function api(path,{method='GET',body}={}){
+  const r=await fetch(path,{method,credentials:'same-origin',headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});
+  if(r.status===401&&path!=='/api/login'){showLogin();throw new AuthError('Sessão expirada.')}
+  let data=null;try{data=await r.json()}catch(e){}
+  if(!r.ok)throw new Error(data?.error||`Erro ${r.status} no servidor.`);
+  return data;
+}
 const stripDerived=o=>{const{cls,itemsRev,units,cost,prodTotal,rev,sellerShip,profit,profitEst,cust,cityN,...raw}=o;return raw};
 
 /* ================= estado ================= */
-const state={orders:[],byKey:new Map(),imports:[],sample:false,dbOk:true,platColor:new Map()};
+const state={orders:[],byKey:new Map(),imports:[],sample:false,platColor:new Map()};
 const F={period:'90',from:null,to:null,platform:'all',store:'all'};
 let S=null, active='geral', TH={};
 const charts={};
@@ -784,12 +394,12 @@ function chartOpts({money=true,pct=false,legend=false,horizontal=false,stacked=f
     interaction:{mode:'index',intersect:false,axis:horizontal?'y':'x'},
     plugins:{legend:{display:legend,position:'top',align:'start',labels:{boxWidth:10,boxHeight:10,useBorderRadius:true,borderRadius:3,color:TH['--fg-2'],padding:14}},
       tooltip:{backgroundColor:TH['--surface'],titleColor:TH['--fg-3'],bodyColor:TH['--fg'],borderColor:TH['--line'],borderWidth:1,padding:10,boxPadding:4,usePointStyle:true,
-        bodyFont:{family:getComputedStyle(document.documentElement).getPropertyValue('--mono')},
+        bodyFont:{weight:'600'},titleFont:{weight:'400'},
         callbacks:{label:c=>' '+tf(c.parsed[horizontal?'x':'y'])+(c.dataset.label?'  '+c.dataset.label:''),afterBody:tooltipExtra||undefined}}},
     scales:horizontal?{x:valAxis,y:catAxis}:{x:catAxis,y:valAxis}};
 }
 function mkChart(id,cfg){charts[id]?.destroy();const el=document.getElementById(id);if(!el||!window.Chart)return;charts[id]=new Chart(el,cfg)}
-const barDs=(label,data,color,extra={})=>({label,data,backgroundColor:color,hoverBackgroundColor:color,borderRadius:4,borderSkipped:'start',maxBarThickness:34,categoryPercentage:.82,barPercentage:.9,...extra});
+const barDs=(label,data,color,extra={})=>({label,data,backgroundColor:color,hoverBackgroundColor:color,borderRadius:3,borderSkipped:'start',maxBarThickness:30,categoryPercentage:.82,barPercentage:.9,...extra});
 function hexA(hex,a){const h=hex.replace('#','');const n=parseInt(h.length===3?h.split('').map(c=>c+c).join(''):h,16);return`rgba(${n>>16&255},${n>>8&255},${n&255},${a})`}
 
 /* ================= componentes HTML ================= */
@@ -1215,16 +825,14 @@ function renderDados(){
   const o=state.orders,real=o.filter(x=>!x.sample);
   let minT=Infinity,maxT=-Infinity;for(const x of real)if(x.t!=null){minT=Math.min(minT,x.t);maxT=Math.max(maxT,x.t)}
   $('#baseStats').innerHTML=real.length?`<dt>Pedidos guardados</dt><dd>${fmtN(real.length)}</dd><dt>Primeiro pedido</dt><dd>${fmtDate(minT)}</dd><dt>Último pedido</dt><dd>${fmtDate(maxT)}</dd><dt>Plataformas</dt><dd>${fmtN(new Set(real.map(x=>x.platform)).size)}</dd><dt>Lojas</dt><dd>${fmtN(new Set(real.map(x=>x.store)).size)}</dd><dt>Clientes identificados</dt><dd>${fmtN(new Set(real.map(x=>x.cust).filter(Boolean)).size)}</dd>`:'<dt>Pedidos guardados</dt><dd>0</dd><dt>Situação</dt><dd style="font-family:var(--font)">mostrando dados de exemplo</dd>';
-  $('#storageNote').textContent=state.dbOk?'Os dados ficam guardados neste navegador, neste aparelho. Baixe um backup de vez em quando ou guarde as planilhas originais.':'Este navegador bloqueou o armazenamento local: os dados valem só até fechar a página.';
+  $('#storageNote').textContent='Os dados ficam guardados no seu servidor e aparecem em qualquer aparelho em que você entrar. Baixe um backup de vez em quando.';
   const log=state.imports.slice().sort((a,b)=>b.at-a.at);
   $('#importLog').innerHTML=log.length?`<table><thead><tr><th>Arquivo</th><th>Data</th><th class="n">Linhas</th><th class="n">Novos</th><th class="n">Atualizados</th><th>Pedidos de</th></tr></thead><tbody>${log.map(l=>`<tr><td class="wrap-cell">${esc(l.file)}</td><td>${new Date(l.at).toLocaleString('pt-BR',{dateStyle:'short',timeStyle:'short'})}</td><td class="n">${fmtN(l.rows)}</td><td class="n">${fmtN(l.created)}</td><td class="n">${fmtN(l.updated)}</td><td>${fmtDate(l.minT)} a ${fmtDate(l.maxT)}</td></tr>`).join('')}</tbody></table>`:'<div class="empty">Nenhuma planilha importada ainda.</div>';
 }
 async function importFiles(files){
-  if(!window.XLSX){toast('A biblioteca de planilhas não carregou. Verifique a internet e recarregue a página.');return}
-  let created=0,updated=0,errors=[];
-  const wasSample=state.sample;
-  let base=wasSample?[]:state.orders.map(stripDerived);
-  const map=new Map(base.map(o=>[o.key,o]));
+  if(!window.XLSX){toast('A biblioteca de planilhas não carregou. Recarregue a página.');return}
+  let created=0,updated=0;const errors=[];
+  showTab('dados');toast('Importando…',60000);
   for(const f of files){
     try{
       let orders,rowsN;
@@ -1232,16 +840,19 @@ async function importFiles(files){
       else{const{rows}=await readSheetFile(f);rowsN=rows.length;orders=buildOrders(rows,f.name)}
       if(!orders.length)throw new Error('nenhum pedido com número encontrado');
       let c=0,u=0,mn=Infinity,mx=-Infinity;
-      for(const o of orders){if(map.has(o.key))u++;else c++;map.set(o.key,o);if(o.t!=null){mn=Math.min(mn,o.t);mx=Math.max(mx,o.t)}}
+      for(const o of orders)if(o.t!=null){mn=Math.min(mn,o.t);mx=Math.max(mx,o.t)}
+      for(let i=0;i<orders.length;i+=1500){
+        const r=await api('/api/orders',{method:'POST',body:{orders:orders.slice(i,i+1500)}});
+        c+=r.created;u+=r.updated;
+        if(orders.length>1500)toast(`Enviando ${f.name}: ${fmtN(Math.min(i+1500,orders.length))} de ${fmtN(orders.length)} pedidos…`,60000);
+      }
       created+=c;updated+=u;
-      const entry={file:f.name,at:Date.now(),rows:rowsN,created:c,updated:u,minT:Number.isFinite(mn)?mn:null,maxT:Number.isFinite(mx)?mx:null};
-      state.imports.push(entry);
-      try{await DB.put('imports',[entry]);await DB.put('orders',orders)}catch(e){state.dbOk=false}
-    }catch(e){errors.push(`${f.name}: ${e.message||e}`)}
+      await api('/api/imports',{method:'POST',body:{file:f.name,rows:rowsN,created:c,updated:u,minT:Number.isFinite(mn)?mn:null,maxT:Number.isFinite(mx)?mx:null}});
+    }catch(e){if(e instanceof AuthError)return;errors.push(`${f.name}: ${e.message||e}`)}
   }
-  if(created+updated>0){setOrders([...map.values()]);refresh(true)}
+  if(created+updated>0){await loadData();refresh()}
   else renderDados();
-  toast(errors.length?`Não consegui ler ${errors.join(' · ')}`:`Importado: ${fmtN(created)} pedidos novos, ${fmtN(updated)} atualizados.`,errors.length?7000:4000);
+  toast(errors.length?`Não consegui importar ${errors.join(' · ')}`:`Importado: ${fmtN(created)} pedidos novos, ${fmtN(updated)} atualizados.`,errors.length?8000:4000);
 }
 function toast(msg,ms=3500){const t=$('#toast');t.textContent=msg;t.hidden=false;clearTimeout(toast._t);toast._t=setTimeout(()=>t.hidden=true,ms)}
 
@@ -1325,6 +936,7 @@ const RENDER={geral:renderGeral,diagnostico:renderDiagnostico,produtos:renderPro
 function showTab(name){
   if(!RENDER[name])name='geral';active=name;
   $$('.tab-btn').forEach(b=>b.setAttribute('aria-selected',b.dataset.tab===name));
+  const tb=$(`.tab-btn[data-tab="${name}"]`);$('#crumb').textContent=tb?tb.childNodes[1].textContent.trim():'';
   $$('.tab').forEach(s=>s.hidden=s.id!=='tab-'+name);
   hideTip();
   if(dirty.has(name)||name==='dados'){dirty.delete(name);RENDER[name]()}
@@ -1365,20 +977,18 @@ drop.addEventListener('drop',e=>{const f=[...(e.dataTransfer?.files||[])];if(f.l
 document.addEventListener('dragover',e=>e.preventDefault());
 document.addEventListener('drop',e=>{if(!drop.contains(e.target)){e.preventDefault();const f=[...(e.dataTransfer?.files||[])];if(f.length){showTab('dados');importFiles(f)}}});
 $('#btnBackup').onclick=()=>{
-  const real=state.orders.filter(o=>!o.sample);
-  if(!real.length){toast('Ainda não há dados seus para salvar.');return}
-  const blob=new Blob([JSON.stringify({app:'raiox-vendas',version:1,exportedAt:new Date().toISOString(),orders:real.map(stripDerived)})],{type:'application/json'});
-  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`raiox-vendas-backup-${ymd(new Date())}.json`;document.body.appendChild(a);a.click();
-  setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},1000);
-  toast('Backup gerado. Se o download não começar, este visualizador bloqueia downloads: abra o painel direto no navegador.');
+  if(state.sample){toast('Ainda não há dados seus para salvar.');return}
+  location.href='/api/backup';
 };
 $('#btnClear').onclick=async e=>{
   const b=e.currentTarget;
   if(!b.classList.contains('armed')){b.classList.add('armed');b.textContent='Clique de novo para apagar tudo';clearTimeout(b._t);b._t=setTimeout(()=>{b.classList.remove('armed');b.textContent='Apagar todos os dados'},4000);return}
   b.classList.remove('armed');b.textContent='Apagar todos os dados';
-  try{await DB.clear()}catch(err){}
-  state.imports=[];loadSample();refresh();showTab('dados');toast('Dados apagados. Voltamos aos dados de exemplo.');
+  try{await api('/api/data',{method:'DELETE'})}catch(err){if(!(err instanceof AuthError))toast(err.message);return}
+  state.imports=[];loadSample();refresh();showTab('dados');toast('Dados apagados do servidor. Voltamos aos dados de exemplo.');
 };
+$('#btnLogout').onclick=async()=>{try{await api('/api/logout',{method:'POST'})}catch(e){}location.reload()};
+addEventListener('scroll',()=>$('.topbar').classList.toggle('scrolled',scrollY>4),{passive:true});
 matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change',rerender);
 new MutationObserver(rerender).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
 let rz;addEventListener('resize',()=>{clearTimeout(rz);rz=setTimeout(hideTip,100)});
@@ -1386,22 +996,33 @@ addEventListener('scroll',hideTip,{passive:true});
 
 function loadSample(){const r=rowsFromAoA(makeSample());setOrders(buildOrders(r.rows,'Dados de exemplo',true))}
 
-async function boot(){
+async function loadData(){
+  const [orders,imports]=await Promise.all([api('/api/orders'),api('/api/imports')]);
+  state.imports=imports;
+  if(orders.length)setOrders(orders);else loadSample();
+}
+function showLogin(){$('#app').hidden=true;$('#login').hidden=false;setTimeout(()=>$('#lUser').focus(),0)}
+$('#loginForm').addEventListener('submit',async e=>{
+  e.preventDefault();const btn=$('#lBtn'),err=$('#loginErr');err.hidden=true;btn.disabled=true;
+  try{await api('/api/login',{method:'POST',body:{user:$('#lUser').value,password:$('#lPass').value}});$('#lPass').value='';await start()}
+  catch(x){err.textContent=x.message;err.hidden=false}
+  finally{btn.disabled=false}
+});
+async function start(){
+  $('#login').hidden=true;$('#app').hidden=false;
   applyTheme();
-  if(!window.Chart||!window.XLSX){$('#dataInfo').textContent='Não foi possível carregar as bibliotecas. Verifique a conexão com a internet.'}
-  let saved=[];
-  try{await DB.open();saved=await DB.all('orders');state.imports=await DB.all('imports')}catch(e){state.dbOk=false}
-  if(saved.length)setOrders(saved);else loadSample();
+  if(!window.Chart||!window.XLSX)$('#dataInfo').textContent='As bibliotecas do painel não carregaram. Recarregue a página.';
+  $('#dataInfo').textContent='Carregando dados…';
+  await loadData();
   const h=(location.hash||'').slice(1);
-  active=RENDER[h]?h:(saved.length?'geral':'geral');
+  active=RENDER[h]?h:'geral';
   $('#customRange').hidden=F.period!=='custom';
-  if(F.period==='custom')F.period='90',$('#fPeriod').value='90';
+  if(F.period==='custom'){F.period='90';$('#fPeriod').value='90'}
   computeScope();Object.keys(RENDER).forEach(k=>dirty.add(k));
-  showTab(active);updateBadge();
-  $('#sampleBanner').hidden=!state.sample;
-  $('#dataInfo').textContent=`${state.sample?'Exemplo · ':''}${fmtN(S.cur.length)} pedidos de ${fmtDate(S.from)} a ${fmtDate(S.to)}`;
+  showTab(active);refresh();
+}
+async function boot(){
+  try{await api('/api/me')}catch(e){if(!(e instanceof AuthError)){showLogin();$('#loginErr').textContent='Não foi possível falar com o servidor.';$('#loginErr').hidden=false}return}
+  try{await start()}catch(e){if(!(e instanceof AuthError))toast(e.message,8000)}
 }
 boot();
-</script>
-</body>
-</html>
