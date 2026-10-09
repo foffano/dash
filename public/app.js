@@ -82,12 +82,11 @@ const HEADERS={
   prazodeenvio:'shipDeadline',horadeenvio:'shipTime',horariodesaida:'departTime',horariodaretirada:'pickupTime',
   moeda:'currency',valordopedido:'orderValue',valortotaldeprodutos:'productsTotal',descontosecupons:'discounts',
   comissaototal:'commission',fretedocomprador:'buyerShipping',totaldefrete:'totalShipping',
-  lucroestimado:'profit',margemdelucroestimada:'marginField',
   posvendacanceladodevolvido:'afterSale',canceladopor:'canceledBy',razaodocancelamento:'cancelReason',
   nomedoanuncio:'listingName',iddoanuncio:'listingId',sku:'sku',variacao:'variation',iddavariante:'variantId',
   precodeproduto:'price',qtddoproduto:'qty',
   skuarmazem:'wsku',quantidademapeada:'mappedQty',quantidadedeprodutos:'wQty',nomedoproduto:'productName',
-  customedio:'avgCost',custodoproduto:'unitCost',brinde:'gift',valorrateadoporproduto:'allocValue',
+  brinde:'gift',valorrateadoporproduto:'allocValue',
   nomedecomprador:'buyerName',iddocomprador:'buyerId',nomedodestinatario:'recipient',
   bairro:'district',cidade:'city',estado:'state',cep:'cep',paisregiao:'country',
   logisticaarmazemindicado:'logistics',metododeenvio:'shipMethod',metododecoletar:'collectMethod'
@@ -102,7 +101,7 @@ function rowsFromAoA(aoa){
   const cols=[],seen={};
   aoa[hIdx].forEach((h,j)=>{
     let f=HEADERS[norm(h)]; if(!f)return;
-    if(seen[f]){if(f==='profit')f='profit2';else return}
+    if(seen[f])return;
     seen[f]=1; cols.push([j,f]);
   });
   const rows=[];
@@ -154,18 +153,15 @@ function buildOrders(rows,source,sample=false){
       if(!it){
         const qty=num(r.qty), price=num(r.price);
         it={name:clean(r.listingName)||clean(r.productName)||clean(r.sku)||clean(r.wsku)||'Sem nome',listingId:clean(r.listingId),sku:clean(r.sku)||clean(r.wsku),variation:clean(r.variation),
-            price:price??(num(r.allocValue)!=null&&qty?num(r.allocValue)/qty:0),qty:qty??1,cost:0,comps:[]};
+            price:price??(num(r.allocValue)!=null&&qty?num(r.allocValue)/qty:0),qty:qty??1,comps:[]};
         items.set(ik,it);
       }
       if(clean(r.wsku)||clean(r.productName)){
-        const uc=num(r.unitCost)||num(r.avgCost)||0;
         const wq=num(r.wQty)||(num(r.mappedQty)||1)*(it.qty||1);
-        it.comps.push({sku:clean(r.wsku),name:clean(r.productName),qty:wq,cost:uc*wq,gift:!!clean(r.gift)&&!/^(nao|não|no|0|false)$/i.test(clean(r.gift))});
-        it.cost+=uc*wq;
+        it.comps.push({sku:clean(r.wsku),name:clean(r.productName),qty:wq,gift:!!clean(r.gift)&&!/^(nao|não|no|0|false)$/i.test(clean(r.gift))});
       }
     }
     const its=[...items.values()].filter(i=>i.name!=='Sem nome'||i.price>0);
-    const prof=sumF('profit');
     out.push({
       key,platformOrderNo:clean(f('platformOrderNo')),orderNo:clean(f('orderNo')),
       platform:clean(f('platform'))||'Não informada',store:clean(f('store'))||'Não informada',
@@ -173,7 +169,7 @@ function buildOrders(rows,source,sample=false){
       t:toDate(f('orderTime'))??toDate(f('payTime')),payT:toDate(f('payTime')),
       shipT:toDate(f('shipTime'))??toDate(f('departTime'))??toDate(f('pickupTime')),deadline:toDate(f('shipDeadline')),
       orderValue:sumF('orderValue'),productsTotal:sumF('productsTotal'),discounts:sumF('discounts'),commission:sumF('commission'),
-      buyerShipping:sumF('buyerShipping'),totalShipping:sumF('totalShipping'),profitRaw:prof!=null?prof:sumF('profit2'),
+      buyerShipping:sumF('buyerShipping'),totalShipping:sumF('totalShipping'),
       buyerId:clean(f('buyerId')),buyerName:clean(f('buyerName')),recipient:clean(f('recipient')),
       city:clean(f('city')),uf:toUF(f('state'),f('cep')),cep:String(f('cep')).replace(/\D/g,'').slice(0,8),district:clean(f('district')),
       shipMethod:clean(f('shipMethod'))||clean(f('logistics')),items:its,source,sample,importedAt:Date.now()
@@ -181,25 +177,39 @@ function buildOrders(rows,source,sample=false){
   }
   return out;
 }
-function classify(o){
+// "unpaid" = o comprador nunca pagou (pedido em aberto ou cancelado por falta de pagamento).
+// Esses pedidos não contam como venda nem como cancelamento.
+const UNPAID_STATUS=/naopago|aguardandopagamento|unpaid|pendentedepagamento|pagamentopendente/;
+const UNPAID_REASON=/pagamento|pago|unpaid|overduetopay|paiement|plazodepago|tempolimite/;
+function classify(o,hasPayT){
   const s=norm(o.status+' '+o.afterSale);
-  if(/cancel/.test(s))return 'cancelled';
+  if(/cancel/.test(s)){
+    if(UNPAID_REASON.test(norm(o.cancelReason))&&!/metododepagamento|paymentmethod/.test(norm(o.cancelReason))&&!o.payT)return 'unpaid';
+    // Cancelado sem hora de pagamento: o comprador desistiu antes de pagar.
+    if(hasPayT&&!o.payT)return 'unpaid';
+    return 'cancelled';
+  }
   if(/devol|reembols|retorn|refund|return/.test(s))return 'returned';
-  if(/naopago|aguardandopagamento|unpaid|pendentedepagamento|pagamentopendente/.test(s))return 'unpaid';
+  if(UNPAID_STATUS.test(s))return 'unpaid';
   return 'ok';
 }
+// Por que um pedido pago foi cancelado ou devolvido.
+function cancelGroup(o){
+  if(o.cls==='returned')return 'Devolução ou reembolso';
+  const r=norm(o.cancelReason),by=norm(o.canceledBy);
+  if(/pacote|entreg|deliver|perdid|lost|retirada/.test(r))return 'Problema na entrega';
+  if(/estoque|stock|seller|vendedor/.test(r+' '+by))return 'Vendedor (estoque, endereço)';
+  if(/buyer|comprador/.test(by))return 'Comprador desistiu';
+  return 'Plataforma ou outro motivo';
+}
 function cityTitle(c){return c.toLowerCase().replace(/(^|\s|-)(\p{L})/gu,(m,a,b)=>a+b.toUpperCase()).replace(/\s(De|Da|Do|Das|Dos|E)\s/g,m=>m.toLowerCase())}
-function enrich(o){
-  o.cls=classify(o);
+function enrich(o,hasPayT=true){
+  o.cls=classify(o,hasPayT);
+  o.cancelGroup=o.cls==='cancelled'||o.cls==='returned'?cancelGroup(o):'';
   o.itemsRev=sum(o.items,i=>i.price*i.qty);
   o.units=sum(o.items,i=>i.qty);
-  o.cost=sum(o.items,i=>i.cost);
   o.prodTotal=o.productsTotal??o.itemsRev;
   o.rev=o.orderValue??o.productsTotal??o.itemsRev;
-  o.sellerShip=Math.max(0,(o.totalShipping||0)-(o.buyerShipping||0));
-  if(o.profitRaw!=null){o.profit=o.profitRaw;o.profitEst=false}
-  else if(o.cost>0){o.profit=o.prodTotal-Math.abs(o.discounts||0)-Math.abs(o.commission||0)-o.sellerShip-o.cost;o.profitEst=true}
-  else o.profit=null;
   const bid=o.buyerId, bn=norm(o.buyerName||o.recipient);
   o.cust=bid?o.platform+':'+bid:bn?'n:'+bn+':'+(o.cep||'').slice(0,5):null;
   o.cityN=o.city?cityTitle(o.city):'';
@@ -215,7 +225,7 @@ async function api(path,{method='GET',body}={}){
   if(!r.ok)throw new Error(data?.error||`Erro ${r.status} no servidor.`);
   return data;
 }
-const stripDerived=o=>{const{cls,itemsRev,units,cost,prodTotal,rev,sellerShip,profit,profitEst,cust,cityN,...raw}=o;return raw};
+const stripDerived=o=>{const{cls,cancelGroup,itemsRev,units,prodTotal,rev,cust,cityN,...raw}=o;return raw};
 
 /* ================= estado ================= */
 const state={orders:[],byKey:new Map(),imports:[],sample:false,platColor:new Map()};
@@ -228,7 +238,9 @@ try{const sv=JSON.parse(localStorage.getItem('raiox-ui')||'{}');if(sv.period)F.p
 const saveUi=()=>{try{localStorage.setItem('raiox-ui',JSON.stringify({period:F.period,pGroup:ui.pGroup}))}catch(e){}};
 
 function setOrders(list){
-  state.orders=list.map(enrich);
+  // Sem a coluna "Hora do Pagamento" na base, não dá para saber quem pagou: aí só o motivo decide.
+  const hasPayT=list.some(o=>o.payT!=null);
+  state.orders=list.map(o=>enrich(o,hasPayT));
   state.byKey=new Map(state.orders.map(o=>[o.key,o]));
   state.sample=state.orders.length>0&&state.orders.every(o=>o.sample);
   const plat=new Map();
@@ -272,16 +284,17 @@ const memo=(k,fn)=>k in S.memo?S.memo[k]:(S.memo[k]=fn());
 
 /* ================= agregações ================= */
 function totals(list){
-  let rev=0,profit=0,profitRev=0,units=0,n=0,prod=0;const cust=new Set();
-  for(const o of list){if(o.cls!=='ok')continue;n++;rev+=o.rev||0;prod+=o.prodTotal||0;units+=o.units;if(o.profit!=null){profit+=o.profit;profitRev+=o.rev||0}if(o.cust)cust.add(o.cust)}
-  return{rev,n,prod,ticket:n?rev/n:0,profit,profitRev,margin:profitRev?profit/profitRev:NaN,units,cust:cust.size,hasProfit:profitRev>0};
+  let rev=0,units=0,n=0,prod=0;const cust=new Set();
+  for(const o of list){if(o.cls!=='ok')continue;n++;rev+=o.rev||0;prod+=o.prodTotal||0;units+=o.units;if(o.cust)cust.add(o.cust)}
+  return{rev,n,prod,ticket:n?rev/n:0,units,cust:cust.size};
 }
+// Taxa de cancelamento: cancelados depois de pagos + devolvidos, sobre os pedidos pagos.
+// Pedidos não pagos ficam fora da conta (nem no total, nem nos cancelados).
 function cancelRate(list){let all=0,c=0;for(const o of list){if(o.cls==='unpaid')continue;all++;if(o.cls==='cancelled'||o.cls==='returned')c++}return all?c/all:NaN}
 function groupBy(list,keyFn){
   const m=new Map();
-  for(const o of list){const k=keyFn(o);if(k==null||k==='')continue;let g=m.get(k);if(!g)m.set(k,g={k,n:0,rev:0,prod:0,profit:0,profitRev:0,comm:0,disc:0,ship:0,cost:0,cust:new Set()});
-    g.n++;g.rev+=o.rev||0;g.prod+=o.prodTotal||0;g.comm+=Math.abs(o.commission||0);g.disc+=Math.abs(o.discounts||0);g.ship+=o.sellerShip||0;g.cost+=o.cost||0;
-    if(o.profit!=null){g.profit+=o.profit;g.profitRev+=o.rev||0}if(o.cust)g.cust.add(o.cust)}
+  for(const o of list){const k=keyFn(o);if(k==null||k==='')continue;let g=m.get(k);if(!g)m.set(k,g={k,n:0,rev:0,prod:0,cust:new Set()});
+    g.n++;g.rev+=o.rev||0;g.prod+=o.prodTotal||0;if(o.cust)g.cust.add(o.cust)}
   return[...m.values()].sort((a,b)=>b.rev-a.rev);
 }
 function prodKey(it,mode){return mode==='name'?norm(it.name):mode==='var'?norm(it.name)+'|'+norm(it.variation):(it.sku?norm(it.sku):norm(it.name))}
@@ -292,14 +305,12 @@ function aggProducts(mode){return memo('prod-'+mode,()=>{
     for(const it of o.items){
       const k=prodKey(it,mode);
       let p=m.get(k);
-      if(!p)m.set(k,p={k,name:it.name,sku:it.sku,variation:mode==='var'?it.variation:'',units:0,rev:0,orders:0,profit:0,profitRev:0,cost:0,costRev:0,cancel:0,tried:0,last30:0,prev30:0,last:0});
+      if(!p)m.set(k,p={k,name:it.name,sku:it.sku,variation:mode==='var'?it.variation:'',units:0,rev:0,orders:0,cancel:0,tried:0,last30:0,prev30:0,last:0});
       if(o.cls!=='unpaid')p.tried++;
       if(bad)p.cancel++;
       if(!ok)continue;
       const r=it.price*it.qty;
       p.units+=it.qty;p.rev+=r;p.orders++;
-      if(o.profit!=null){p.profit+=o.itemsRev?o.profit*r/o.itemsRev:o.profit/o.items.length;p.profitRev+=r}
-      if(it.cost>0){p.cost+=it.cost;p.costRev+=r}
       if(o.t>t30)p.last30+=r;else if(o.t>t60)p.prev30+=r;
       if(o.t>p.last)p.last=o.t;
     }
@@ -309,7 +320,6 @@ function aggProducts(mode){return memo('prod-'+mode,()=>{
   for(const p of list){
     p.share=total?p.rev/total:0;const before=cum;cum+=p.share;p.cum=cum;
     p.abc=p.rev<=0?'C':before<0.8?'A':before<0.95?'B':'C';
-    p.margin=p.profitRev?p.profit/p.profitRev:null;
     p.avgPrice=p.units?p.rev/p.units:0;
     p.cancelRate=p.tried?p.cancel/p.tried:0;
     p.trend=p.prev30>0?p.last30/p.prev30-1:(p.last30>0?Infinity:null);
@@ -354,12 +364,12 @@ function aggStates(){return memo('uf',()=>{
   const m=new Map(),cities=new Map();let tot=0,totN=0;
   for(const o of S.valid){
     if(!o.uf)continue;tot+=o.rev||0;totN++;
-    let g=m.get(o.uf);if(!g)m.set(o.uf,g={k:o.uf,n:0,rev:0,cust:new Set(),profit:0,profitRev:0});
-    g.n++;g.rev+=o.rev||0;if(o.cust)g.cust.add(o.cust);if(o.profit!=null){g.profit+=o.profit;g.profitRev+=o.rev||0}
+    let g=m.get(o.uf);if(!g)m.set(o.uf,g={k:o.uf,n:0,rev:0,cust:new Set()});
+    g.n++;g.rev+=o.rev||0;if(o.cust)g.cust.add(o.cust);
     if(o.cityN){const ck=o.cityN+' / '+o.uf;let c=cities.get(ck);if(!c)cities.set(ck,c={k:ck,n:0,rev:0});c.n++;c.rev+=o.rev||0}
   }
   const list=[...m.values()].map(g=>({...g,nc:g.cust.size,ticket:g.n?g.rev/g.n:0,share:tot?g.rev/tot:0,nShare:totN?g.n/totN:0,
-    idx:totN&&POP[g.k]?(g.n/totN)/(POP[g.k]/POP_TOT):0,margin:g.profitRev?g.profit/g.profitRev:null,region:REGION[g.k]})).sort((a,b)=>b.rev-a.rev);
+    idx:totN&&POP[g.k]?(g.n/totN)/(POP[g.k]/POP_TOT):0,region:REGION[g.k]})).sort((a,b)=>b.rev-a.rev);
   return{list,tot,totN,cities:[...cities.values()].sort((a,b)=>b.rev-a.rev),coverage:S.valid.length?totN/S.valid.length:0};
 })}
 function aggTime(){return memo('time',()=>{
@@ -427,7 +437,6 @@ function table(el,cols,rows,sortState,{limit=150,onSort,rowAttr}={}){
     shown.map(r=>`<tr>${cols.map(c=>`<td class="${c.num?'n':''} ${c.cls||''}">${c.fmt?c.fmt(r):esc(r[c.k])}</td>`).join('')}</tr>`).join('')||`<tr><td colspan="${cols.length}" class="empty">Sem dados no período.</td></tr>`}</tbody></table>${sorted.length>limit?`<div class="tbl-foot">Mostrando ${limit} de ${fmtN(sorted.length)}. Use a busca ou os filtros para encontrar outros.</div>`:''}`;
   $$('th button',el).forEach(b=>b.onclick=()=>{const nk=b.dataset.k;if(sortState.k===nk)sortState.dir*=-1;else{sortState.k=nk;sortState.dir=cols.find(c=>c.k===nk).num?-1:1}onSort&&onSort()});
 }
-const marginCell=m=>m==null?'<span class="muted">—</span>':`<span class="${m<0?'neg':m<0.08?'neg':''}">${fmtP(m)}</span>`;
 function emptyState(el,msg){el.innerHTML=`<div class="empty">${msg}</div>`}
 
 /* ================= tooltip HTML ================= */
@@ -443,20 +452,17 @@ function renderGeral(){
     kpi('Faturamento',fmtR0(c.rev),c.rev,p.rev),
     kpi('Pedidos válidos',fmtN(c.n),c.n,p.n),
     kpi('Ticket médio',fmtR(c.ticket),c.ticket,p.ticket),
-    kpi('Lucro estimado',c.hasProfit?fmtR0(c.profit):'—',c.profit,p.hasProfit?p.profit:null,{hint:c.hasProfit?'':'sem lucro/custo'}),
-    kpi('Margem',fmtP(c.margin),c.margin,p.margin,{pp:true}),
     kpi('Unidades vendidas',fmtN(c.units),c.units,p.units),
     kpi('Clientes únicos',fmtN(c.cust),c.cust,p.cust),
-    kpi('Cancel. + devol.',fmtP(cr),cr,pcr,{pp:true,invert:true})
+    kpi('Taxa de cancelamento',fmtP(cr),cr,pcr,{pp:true,invert:true,hint:'só pedidos pagos'})
   ].join('');
   const keys=bucketList(S.from,S.to,S.gran),idx=new Map(keys.map((k,i)=>[k,i]));
-  const rev=Array(keys.length).fill(0),prof=Array(keys.length).fill(0),ord=Array(keys.length).fill(0);
-  for(const o of S.valid){if(o.t==null)continue;const i=idx.get(bucketKey(o.t,S.gran));if(i==null)continue;rev[i]+=o.rev||0;ord[i]++;if(o.profit!=null)prof[i]+=o.profit}
+  const rev=Array(keys.length).fill(0),ord=Array(keys.length).fill(0);
+  for(const o of S.valid){if(o.t==null)continue;const i=idx.get(bucketKey(o.t,S.gran));if(i==null)continue;rev[i]+=o.rev||0;ord[i]++}
   const labels=keys.map(k=>bucketLabel(k,S.gran));
   $('#granLbl').textContent={day:'por dia',week:'por semana (início na segunda)',month:'por mês'}[S.gran];
   const ds=[{label:'Faturamento',data:rev,borderColor:TH['--s1'],backgroundColor:hexA(TH['--s1'],.10),fill:true,borderWidth:2,pointRadius:0,pointHoverRadius:4,tension:.25}];
-  if(c.hasProfit)ds.push({label:'Lucro estimado',data:prof,borderColor:TH['--s3'],backgroundColor:'transparent',fill:false,borderWidth:2,pointRadius:0,pointHoverRadius:4,tension:.25});
-  mkChart('cTimeline',{type:'line',data:{labels,datasets:ds},options:chartOpts({legend:ds.length>1})});
+  mkChart('cTimeline',{type:'line',data:{labels,datasets:ds},options:chartOpts()});
   mkChart('cOrders',{type:'bar',data:{labels,datasets:[barDs('Pedidos',ord,TH['--s1'])]},options:chartOpts({money:false})});
   const plats=groupBy(S.valid,o=>o.platform);
   $('#platList').innerHTML=barList(plats.map(g=>({label:g.k,value:g.rev,n:g.n})),{colorFn:r=>pc(r.label),sub:r=>fmtP(c.rev?r.value/c.rev:0,0)});
@@ -486,9 +492,6 @@ function buildInsights(){return memo('ins',()=>{
     const sh=plats[0].rev/c.rev;
     if(sh>0.7)add(plats.length===1?'warn':sh>0.85?'warn':'info','Canais',`${fmtP(sh,0)} do faturamento vem de ${esc(plats[0].k)}`,
       'Alta dependência de um único marketplace: uma mudança de taxa, de algoritmo ou uma suspensão de conta afeta quase todo o negócio. Vale testar os produtos da curva A em outro canal.');
-    const withM=plats.filter(g=>g.profitRev>0&&g.n>=10);
-    if(withM.length>=2){const ms=withM.map(g=>({k:g.k,m:g.profit/g.profitRev})).sort((a,b)=>b.m-a.m);const b=ms[0],w=ms[ms.length-1];
-      if(b.m-w.m>0.04)add('info','Canais',`${esc(b.k)} dá mais margem que ${esc(w.k)}`,`Margem estimada de <strong>${fmtP(b.m)}</strong> em ${esc(b.k)} contra <strong>${fmtP(w.m)}</strong> em ${esc(w.k)}. Revise preços e frete em ${esc(w.k)} ou direcione verba de anúncios para ${esc(b.k)}.`)}
     const grow=plats.filter(g=>g.n>=10).map(g=>{const pv=S.prevValid.filter(o=>o.platform===g.k);const pr=sum(pv,o=>o.rev);return{k:g.k,g:pr>0?g.rev/pr-1:null}}).filter(x=>x.g!=null).sort((a,b)=>b.g-a.g);
     if(S.hasPrev&&grow.length>=2&&grow[0].g>0.2)add('good','Canais',`${esc(grow[0].k)} é o canal que mais cresce`,`Faturamento ${signed(grow[0].g)} frente ao período anterior. Avalie ampliar o catálogo nesse canal.`);
   }
@@ -501,36 +504,24 @@ function buildInsights(){return memo('ins',()=>{
     const cs=prods.filter(x=>x.abc==='C').length;
     if(cs/prods.length>0.5)add('info','Produtos',`${cs} produtos estão na curva C`,`Somados, vendem menos de 5% do faturamento. Considere liquidar, juntar em kits com itens da curva A ou parar de repor.`);
   }
-  const lowM=prods.filter(x=>x.margin!=null&&x.margin<0.08&&x.share>0.01).sort((a,b)=>a.margin-b.margin);
-  if(lowM.length)add(lowM.some(x=>x.margin<0)?'crit':'warn','Margem',`${lowM.length} produto${lowM.length>1?'s':''} relevante${lowM.length>1?'s':''} com margem abaixo de 8%`,
-    lowM.slice(0,4).map(x=>`<strong>${esc(x.name)}</strong> ${fmtP(x.margin)}`).join(' · ')+'. Revise preço, custo de compra, frete e comissão. Margem negativa significa prejuízo a cada venda.');
-  const neg=S.valid.filter(o=>o.profit!=null&&o.profit<0);
-  if(c.hasProfit&&neg.length&&neg.length/c.n>0.02)add(neg.length/c.n>0.08?'crit':'warn','Margem',`${fmtN(neg.length)} pedidos deram prejuízo`,`Somam <strong>${fmtR(sum(neg,o=>o.profit))}</strong> (${fmtP(neg.length/c.n)} dos pedidos). Veja a lista na aba Financeiro: costuma ser frete pago pelo vendedor, cupom ou comissão fixa em itens baratos.`);
-  if(c.hasProfit){const m=c.margin;if(m>=0.18)add('good','Margem',`Margem estimada saudável: ${fmtP(m)}`,`Lucro estimado de <strong>${fmtR0(c.profit)}</strong> no período.`);else if(m<0.08)add('crit','Margem',`Margem estimada baixa: ${fmtP(m)}`,'Pouco espaço para anúncios, devoluções e imprevistos. Comece pelos produtos de maior faturamento com margem baixa.')}
-  const noCost=sum(S.valid,o=>o.profitRaw==null&&o.cost===0?o.rev:0);
-  const costLines=S.valid.flatMap(o=>o.items).filter(i=>i.comps.length);
-  const zeroCost=costLines.filter(i=>i.cost===0).length;
-  if(!c.hasProfit)add('warn','Dados','Sem lucro nem custo nas planilhas',`Marque <strong>Lucro Estimado</strong> e <strong>Custo do Produto</strong> na exportação da UpSeller para liberar a análise de margem.`);
-  else if(noCost/c.rev>0.15)add('warn','Dados',`${fmtP(noCost/c.rev,0)} do faturamento sem custo cadastrado`,'O lucro desses pedidos não pôde ser estimado. Cadastre o custo dos SKUs na UpSeller e exporte de novo.');
-  else if(costLines.length&&zeroCost/costLines.length>0.15)add('warn','Dados',`${fmtP(zeroCost/costLines.length,0)} dos itens estão com custo zero`,'Quando o custo do SKU não está cadastrado na UpSeller, o lucro estimado fica maior do que o real.');
   // cancelamento
   const cr=cancelRate(S.cur);
   if(Number.isFinite(cr)){
     const canc=S.cur.filter(o=>o.cls==='cancelled'||o.cls==='returned');
-    const rs=groupBy(canc,o=>o.cancelReason||null).sort((a,b)=>b.n-a.n);
+    const rs=groupBy(canc,o=>o.cancelGroup).sort((a,b)=>b.n-a.n);
     const worst=prods.filter(x=>x.tried>=10&&x.cancelRate>Math.max(cr*1.8,0.06)).sort((a,b)=>b.cancelRate-a.cancelRate);
-    if(cr>0.05)add(cr>0.1?'crit':'warn','Operação',`${fmtP(cr)} dos pedidos foram cancelados ou devolvidos`,
-      (rs.length?`Motivo mais comum: <strong>${esc(rs[0].k)}</strong> (${fmtP(rs[0].n/canc.length,0)}). `:'')+(worst.length?`Produto com mais cancelamentos: <strong>${esc(worst[0].name)}</strong> (${fmtP(worst[0].cancelRate,0)}). `:'')+'Cancelamentos acima de 5% derrubam a reputação nos marketplaces.');
+    if(cr>0.05)add(cr>0.1?'crit':'warn','Operação',`${fmtP(cr)} dos pedidos pagos foram cancelados ou devolvidos`,
+      (rs.length?`Causa mais comum: <strong>${esc(rs[0].k)}</strong> (${fmtP(rs[0].n/canc.length,0)}). `:'')+(worst.length?`Produto com mais cancelamentos: <strong>${esc(worst[0].name)}</strong> (${fmtP(worst[0].cancelRate,0)}). `:'')+'Cancelamentos acima de 5% derrubam a reputação nos marketplaces.');
     else{add('good','Operação',`Cancelamentos sob controle: ${fmtP(cr)}`,'Abaixo da faixa de alerta de 5% usada pelos marketplaces.');
       if(worst.length)add('warn','Produtos',`${esc(worst[0].name)} cancela ${fmtP(worst[0].cancelRate,0)} das vezes`,'Bem acima da média da loja. Confira descrição, fotos, prazo e estoque desse anúncio.')}
   }
+  const unpaid=S.cur.filter(o=>o.cls==='unpaid').length;
+  if(unpaid&&unpaid/S.cur.length>0.05)add('info','Vendas',`${fmtN(unpaid)} pedidos não foram pagos`,`${fmtP(unpaid/S.cur.length,0)} dos pedidos feitos no período ficaram sem pagamento e foram cancelados pela plataforma ou pelo comprador. Eles não entram no faturamento nem na taxa de cancelamento. Boleto e Pix vencidos são a causa mais comum.`);
   // envio
   const shipped=S.valid.filter(o=>o.shipT&&o.deadline);
   if(shipped.length>=20){const late=shipped.filter(o=>o.shipT>o.deadline).length/shipped.length;
     if(late>0.05)add(late>0.12?'crit':'warn','Operação',`${fmtP(late)} dos envios saíram depois do prazo`,'Atrasos de postagem pesam na reputação e na exposição dos anúncios. Veja o tempo de separação na aba Operação.');
     else add('good','Operação',`${fmtP(1-late)} dos envios dentro do prazo`,'Mantenha esse ritmo: prazo de postagem é um dos critérios de reputação.')}
-  const shipShare=c.prod?sum(S.valid,o=>o.sellerShip)/c.prod:0;
-  if(shipShare>0.08)add('warn','Margem',`Frete pago por você consome ${fmtP(shipShare)} da receita de produtos`,'Considere ajustar o preço dos itens que entram no frete grátis ou montar kits que diluam o frete.');
   // clientes
   const cu=aggCustomers();
   if(cu.identified&&cu.n>=20){
@@ -612,9 +603,8 @@ function renderProdutos(){
   ].join('');
   const top=list.slice(0,10);
   mkChart('cTopProd',{type:'bar',data:{labels:top.map(p=>p.name.length>28?p.name.slice(0,27)+'…':p.name),datasets:[
-    barDs('Faturamento',top.map(p=>p.rev),TH['--s1']),
-    ...(top.some(p=>p.profitRev)?[barDs('Lucro estimado',top.map(p=>p.profitRev?p.profit:null),TH['--s3'])]:[])]},
-    options:chartOpts({horizontal:true,legend:true,tooltipExtra:items=>{const p=top[items[0].dataIndex];return[`  ${fmtN(p.units)} un. · margem ${p.margin==null?'—':fmtP(p.margin)}`]}})});
+    barDs('Faturamento',top.map(p=>p.rev),TH['--s1'])]},
+    options:chartOpts({horizontal:true,tooltipExtra:items=>{const p=top[items[0].dataIndex];return[`  ${fmtN(p.units)} un.`]}})});
   const abcList=list.filter(p=>p.rev>0).slice(0,60);
   mkChart('cAbc',{type:'bar',data:{labels:abcList.map((p,i)=>String(i+1)),datasets:[
     {...barDs('Participação',abcList.map(p=>p.share),abcList.map(p=>p.abc==='A'?TH['--s1']:p.abc==='B'?hexA(TH['--s1'],.55):hexA(TH['--s1'],.25))),borderRadius:2,maxBarThickness:18}]},
@@ -630,8 +620,6 @@ function renderProdutos(){
     {k:'rev',label:'Faturamento',num:true,fmt:p=>fmtR(p.rev)},
     {k:'share',label:'% receita',num:true,fmt:p=>fmtP(p.share)},
     {k:'avgPrice',label:'Preço médio',num:true,fmt:p=>fmtR(p.avgPrice)},
-    {k:'profit',label:'Lucro est.',num:true,v:p=>p.profitRev?p.profit:null,fmt:p=>p.profitRev?`<span class="${p.profit<0?'neg':''}">${fmtR(p.profit)}</span>`:'—'},
-    {k:'margin',label:'Margem',num:true,fmt:p=>marginCell(p.margin)},
     {k:'cancelRate',label:'Cancel.',num:true,fmt:p=>`<span class="${p.cancelRate>0.08?'neg':''}">${fmtP(p.cancelRate,0)}</span>`},
     ...(showTrend?[{k:'trend',label:'30d vs 30d',num:true,v:p=>Number.isFinite(p.trend)?p.trend:p.trend===Infinity?9e9:null,fmt:p=>p.trend==null?'—':p.trend===Infinity?'<span class="pos">novo</span>':`<span class="${p.trend>=0?'pos':'neg'}">${signed(p.trend)}</span>`}]:[]),
     {k:'last',label:'Última venda',num:true,fmt:p=>p.last?fmtDate(p.last):'—'}
@@ -680,7 +668,6 @@ function renderPublico(){
     {k:'rev',label:'Faturamento',num:true,fmt:g=>fmtR(g.rev)},
     {k:'share',label:'% receita',num:true,fmt:g=>fmtP(g.share)},
     {k:'ticket',label:'Ticket',num:true,fmt:g=>fmtR(g.ticket)},
-    {k:'margin',label:'Margem',num:true,fmt:g=>marginCell(g.margin)},
     {k:'idx',label:'Penetração',num:true,fmt:g=>`<span class="${g.idx>=1.2?'pos':g.idx<0.6?'neg':''}">${NUM1.format(g.idx)}</span>`}
   ],st.list,ui.ufSort,{onSort:renderPublico});
   // novos x recorrentes
@@ -725,83 +712,32 @@ function renderComportamento(){
   mkChart('cDom',{type:'bar',data:{labels:Array.from({length:31},(_,i)=>String(i+1)),datasets:[barDs('Média por dia',tm.domAvg,tm.domAvg.map((v,i)=>i<10?TH['--s1']:hexA(TH['--s1'],.45)),{maxBarThickness:22})]},options:chartOpts({tooltipExtra:it=>[`  ${fmtN(tm.domDays[it[0].dataIndex])} dias no período`]})});
 }
 
-/* ================= aba: financeiro ================= */
-function renderFinanceiro(){
-  const v=S.valid,c=totals(S.cur),p=totals(S.prev);
-  const prod=c.prod,disc=sum(v,o=>Math.abs(o.discounts||0)),comm=sum(v,o=>Math.abs(o.commission||0)),ship=sum(v,o=>o.sellerShip),cost=sum(v,o=>o.cost);
-  const withP=v.filter(o=>o.profit!=null),profit=sum(withP,o=>o.profit),allP=withP.length===v.length&&v.length>0;
-  const pv=S.prevValid,pcomm=sum(pv,o=>Math.abs(o.commission||0)),pprod=p.prod;
-  $('#finKpis').innerHTML=[
-    kpi('Valor dos produtos',fmtR0(prod),prod,pprod),
-    kpi('Comissões',fmtR0(comm),comm,pcomm,{invert:true,hint:fmtP(prod?comm/prod:0)+' dos produtos'}),
-    kpi('Descontos e cupons',fmtR0(disc),disc,sum(pv,o=>Math.abs(o.discounts||0)),{invert:true,hint:fmtP(prod?disc/prod:0)}),
-    kpi('Frete pago por você',fmtR0(ship),ship,sum(pv,o=>o.sellerShip),{invert:true,hint:fmtP(prod?ship/prod:0)}),
-    kpi('Custo dos produtos',cost?fmtR0(cost):'—',cost,sum(pv,o=>o.cost),{invert:true,hint:cost?fmtP(prod?cost/prod:0):'não exportado'}),
-    kpi('Lucro estimado',withP.length?fmtR0(profit):'—',profit,p.hasProfit?p.profit:null,{hint:withP.length&&!allP?`${fmtP(withP.length/v.length,0)} dos pedidos`:''})
-  ].join('');
-  if(!v.length){emptyState($('#waterfall'),'Sem pedidos válidos no período.');}
-  else{
-    const steps=[{l:'Valor dos produtos',v:prod,t:'total'},{l:'Descontos e cupons',v:-disc},{l:'Comissões e taxas',v:-comm},{l:'Frete pago por você',v:-ship},{l:'Custo dos produtos',v:-cost}];
-    let other=null;
-    if(allP){other=profit-(prod-disc-comm-ship-cost);if(Math.abs(other)>prod*0.005)steps.push({l:other<0?'Outros custos (impostos, ajustes)':'Outros ajustes',v:other})}
-    steps.push({l:allP?'Lucro estimado':'Resultado antes de outros custos',v:allP?profit:prod-disc-comm-ship-cost,t:'total'});
-    const scale=Math.max(prod,1);let run=0;
-    $('#waterfall').innerHTML=steps.map(s=>{let left,w,col;
-      if(s.t==='total'){left=Math.min(0,s.v);w=Math.abs(s.v);run=s.v;col=s.v<0?TH['--crit']:s===steps[0]?TH['--s1']:TH['--s3']}
-      else{const a=run,b=run+s.v;left=Math.min(a,b);w=Math.abs(s.v);run=b;col=s.v<0?hexA(TH['--s2'],.85):TH['--s3']}
-      return`<div class="wf-row ${s.t||''}"><span class="wl">${s.l}</span><div class="wf-track"><div class="wf-bar" style="left:${Math.max(0,left/scale*100)}%;width:${Math.max(.3,w/scale*100)}%;background:${col}"></div></div><span class="wv ${s.v<0&&!s.t?'':''}">${s.t?'':s.v<0?'− ':'+ '}${fmtR0(Math.abs(s.v))} <span class="muted">${fmtP(prod?Math.abs(s.v)/prod:0,0)}</span></span></div>`}).join('');
-    $('#wfNote').textContent=allP?'O lucro estimado vem da coluna "Lucro Estimado" da UpSeller. A linha "outros" é a diferença entre esse lucro e as deduções exportadas (impostos e taxas que a UpSeller considera).':withP.length?'Parte dos pedidos não tem lucro estimado na planilha. Exporte "Lucro Estimado" para fechar a conta.':'Sem "Lucro Estimado" na planilha: o resultado considera só as deduções exportadas.';
-  }
-  const plats=groupBy(v,o=>o.platform);
-  table($('#platTable'),[
-    {k:'k',label:'Plataforma',fmt:g=>`<i class="dot" style="background:${pc(g.k)}"></i>${esc(g.k)}`},
-    {k:'n',label:'Pedidos',num:true,fmt:g=>fmtN(g.n)},
-    {k:'rev',label:'Faturamento',num:true,fmt:g=>fmtR(g.rev)},
-    {k:'ticket',label:'Ticket',num:true,v:g=>g.rev/g.n,fmt:g=>fmtR(g.rev/g.n)},
-    {k:'commP',label:'Comissão',num:true,v:g=>g.prod?g.comm/g.prod:0,fmt:g=>fmtP(g.prod?g.comm/g.prod:0)},
-    {k:'discP',label:'Descontos',num:true,v:g=>g.prod?g.disc/g.prod:0,fmt:g=>fmtP(g.prod?g.disc/g.prod:0)},
-    {k:'shipP',label:'Frete vendedor',num:true,v:g=>g.prod?g.ship/g.prod:0,fmt:g=>fmtP(g.prod?g.ship/g.prod:0)},
-    {k:'costP',label:'Custo',num:true,v:g=>g.prod?g.cost/g.prod:0,fmt:g=>g.cost?fmtP(g.prod?g.cost/g.prod:0):'—'},
-    {k:'profit',label:'Lucro est.',num:true,fmt:g=>g.profitRev?`<span class="${g.profit<0?'neg':''}">${fmtR(g.profit)}</span>`:'—'},
-    {k:'margin',label:'Margem',num:true,v:g=>g.profitRev?g.profit/g.profitRev:null,fmt:g=>marginCell(g.profitRev?g.profit/g.profitRev:null)}
-  ],plats,{k:'rev',dir:-1});
-  const mk=bucketList(S.from,S.to,'month'),mi=new Map(mk.map((k,i)=>[k,i]));
-  const pr=Array(mk.length).fill(0),rv=Array(mk.length).fill(0);
-  for(const o of withP){if(o.t==null)continue;const i=mi.get(bucketKey(o.t,'month'));if(i==null)continue;pr[i]+=o.profit;rv[i]+=o.rev||0}
-  mkChart('cMargin',{type:'line',data:{labels:mk.map(k=>bucketLabel(k,'month')),datasets:[{label:'Margem',data:rv.map((r,i)=>r?pr[i]/r:null),borderColor:TH['--s3'],backgroundColor:TH['--s3'],borderWidth:2,pointRadius:mk.length>12?0:3,pointHoverRadius:5,tension:.25,spanGaps:true}]},options:chartOpts({money:false,pct:true})});
-  const neg=withP.filter(o=>o.profit<0).sort((a,b)=>a.profit-b.profit);
-  table($('#negTable'),[
-    {k:'key',label:'Pedido',fmt:o=>`<span class="muted">${esc(o.key)}</span>`},
-    {k:'item',label:'Produto',cls:'wrap-cell',v:o=>o.items[0]?.name||'',fmt:o=>esc((o.items[0]?.name||'—')+(o.items.length>1?` +${o.items.length-1}`:''))},
-    {k:'platform',label:'Plataforma'},
-    {k:'rev',label:'Valor',num:true,fmt:o=>fmtR(o.rev)},
-    {k:'profit',label:'Lucro',num:true,fmt:o=>`<span class="neg">${fmtR(o.profit)}</span>`}
-  ],neg,{k:'profit',dir:1},{limit:15});
-  if(!neg.length)emptyState($('#negTable'),withP.length?'Nenhum pedido com prejuízo no período.':'Exporte "Lucro Estimado" para ver esta lista.');
-}
-
 /* ================= aba: operação ================= */
 function renderOperacao(){
   const all=S.cur,cr=cancelRate(all),pcr=cancelRate(S.prev);
-  const canc=all.filter(o=>o.cls==='cancelled'),ret=all.filter(o=>o.cls==='returned');
+  const canc=all.filter(o=>o.cls==='cancelled'),ret=all.filter(o=>o.cls==='returned'),unpaid=all.filter(o=>o.cls==='unpaid');
   const shipped=S.valid.filter(o=>o.shipT&&o.payT&&o.shipT>=o.payT);
   const hrs=shipped.map(o=>(o.shipT-o.payT)/36e5).sort((a,b)=>a-b);
   const withDl=S.valid.filter(o=>o.shipT&&o.deadline),late=withDl.filter(o=>o.shipT>o.deadline).length;
   $('#opsKpis').innerHTML=[
-    kpi('Pedidos no período',fmtN(all.length),all.length,S.prev.length),
-    kpi('Cancelados',fmtN(canc.length),canc.length,S.prev.filter(o=>o.cls==='cancelled').length,{invert:true}),
+    kpi('Pedidos pagos',fmtN(all.length-unpaid.length),all.length-unpaid.length,S.prev.filter(o=>o.cls!=='unpaid').length),
+    kpi('Não pagos',fmtN(unpaid.length),unpaid.length,S.prev.filter(o=>o.cls==='unpaid').length,{invert:true,hint:'fora da taxa'}),
+    kpi('Cancelados após pagar',fmtN(canc.length),canc.length,S.prev.filter(o=>o.cls==='cancelled').length,{invert:true}),
     kpi('Devolvidos',fmtN(ret.length),ret.length,S.prev.filter(o=>o.cls==='returned').length,{invert:true}),
-    kpi('Taxa cancel. + devol.',fmtP(cr),cr,pcr,{pp:true,invert:true}),
+    kpi('Taxa de cancelamento',fmtP(cr),cr,pcr,{pp:true,invert:true,hint:'sobre pedidos pagos'}),
     kpi('Tempo até envio',hrs.length?NUM1.format(hrs[Math.floor(hrs.length/2)])+' h':'—',null,null,{hint:'mediana'}),
     kpi('Envio no prazo',withDl.length?fmtP(1-late/withDl.length):'—',null,null,{hint:withDl.length?fmtN(late)+' atrasados':'sem prazo exportado'})
   ].join('');
   const st=groupBy(all,o=>o.status||'Não informado').sort((a,b)=>b.n-a.n);
   $('#statusList').innerHTML=barList(st.slice(0,10).map(g=>({label:g.k,value:g.n})),{fmt:fmtN,sub:r=>fmtP(all.length?r.value/all.length:0,0)});
   const cAll=canc.concat(ret);
+  const share=r=>fmtP(cAll.length?r.value/cAll.length:0,0);
+  const cg=groupBy(cAll,o=>o.cancelGroup).sort((a,b)=>b.n-a.n);
+  $('#cancelGroupList').innerHTML=barList(cg.map(g=>({label:g.k,value:g.n})),{fmt:fmtN,sub:share,empty:'Nenhum pedido pago foi cancelado no período.'});
   const rs=groupBy(cAll,o=>o.cancelReason||'Motivo não informado').sort((a,b)=>b.n-a.n);
-  $('#reasonList').innerHTML=barList(rs.slice(0,8).map(g=>({label:g.k,value:g.n})),{fmt:fmtN,sub:r=>fmtP(cAll.length?r.value/cAll.length:0,0),empty:'Nenhum cancelamento no período.'});
-  const cb=groupBy(cAll,o=>o.canceledBy||null).sort((a,b)=>b.n-a.n);
-  $('#cancelByBox').innerHTML=cb.length?`<div class="ph" style="margin-top:18px"><h3>Cancelado por</h3></div><div class="bars">${barList(cb.map(g=>({label:g.k,value:g.n})),{fmt:fmtN,sub:r=>fmtP(cAll.length?r.value/cAll.length:0,0)})}</div>`:'';
+  $('#reasonList').innerHTML=barList(rs.slice(0,8).map(g=>({label:g.k,value:g.n})),{fmt:fmtN,sub:share,empty:'Nenhum pedido pago foi cancelado no período.'});
+  const ur=groupBy(unpaid,o=>o.cancelReason||o.status||'Motivo não informado').sort((a,b)=>b.n-a.n);
+  $('#unpaidList').innerHTML=barList(ur.slice(0,6).map(g=>({label:g.k,value:g.n})),{fmt:fmtN,sub:r=>fmtP(unpaid.length?r.value/unpaid.length:0,0),empty:'Nenhum pedido sem pagamento no período.'});
   const hb=[[0,12,'até 12h'],[12,24,'12–24h'],[24,48,'24–48h'],[48,72,'48–72h'],[72,Infinity,'+72h']];
   const hc=hb.map(([a,b])=>hrs.filter(h=>h>=a&&h<b).length);
   mkChart('cHandling',{type:'bar',data:{labels:hb.map(b=>b[2]),datasets:[barDs('Pedidos',hc,hc.map((_,i)=>i>=3?TH['--s2']:TH['--s1']))]},options:chartOpts({money:false,tooltipExtra:it=>[`  ${fmtP(hrs.length?hc[it[0].dataIndex]/hrs.length:0)} dos envios`]})});
@@ -869,7 +805,7 @@ function makeSample(){
   const CIT={SP:['São Paulo','São Paulo','São Paulo','Campinas','Guarulhos','Santo André','Osasco','Ribeirão Preto','Sorocaba','Santos','São José dos Campos'],RJ:['Rio de Janeiro','Rio de Janeiro','Niterói','Duque de Caxias','Nova Iguaçu','São Gonçalo'],MG:['Belo Horizonte','Belo Horizonte','Uberlândia','Contagem','Juiz de Fora','Betim'],PR:['Curitiba','Curitiba','Londrina','Maringá','Ponta Grossa'],RS:['Porto Alegre','Porto Alegre','Caxias do Sul','Pelotas','Canoas'],SC:['Florianópolis','Joinville','Blumenau','São José'],BA:['Salvador','Salvador','Feira de Santana','Vitória da Conquista'],PE:['Recife','Recife','Jaboatão dos Guararapes','Olinda','Caruaru'],CE:['Fortaleza','Fortaleza','Caucaia','Juazeiro do Norte'],GO:['Goiânia','Goiânia','Aparecida de Goiânia','Anápolis'],DF:['Brasília'],ES:['Vitória','Vila Velha','Serra'],PA:['Belém','Ananindeua'],AM:['Manaus'],MA:['São Luís','Imperatriz'],PB:['João Pessoa','Campina Grande'],RN:['Natal','Mossoró'],MT:['Cuiabá','Várzea Grande'],MS:['Campo Grande','Dourados'],AL:['Maceió'],PI:['Teresina'],SE:['Aracaju'],RO:['Porto Velho'],TO:['Palmas'],AC:['Rio Branco'],AP:['Macapá'],RR:['Boa Vista']};
   const ufs=Object.keys(POP),ufW=ufs.map(u=>POP[u]*({Sudeste:1.35,Sul:1.25,'Centro-Oeste':1.0,Nordeste:0.7,Norte:0.45}[REGION[u]])*(u==='SP'?1.2:1)*(u==='PA'||u==='MA'?0.6:1));
   const cepFor=u=>{const r=CEP_RANGES.find(x=>x[2]===u);const n=r[0]+Math.floor(R()*(r[1]-r[0]));return String(n).padStart(5,'0')+'-'+String(Math.floor(R()*999)).padStart(3,'0')};
-  const H=['Nº de Pedido da Plataforma','Nº de Pedido','Plataformas','Nome da Loja no UpSeller','Estado do Pedido','Hora do Pedido','Hora do Pagamento','Prazo de Envio','Hora de Envio','Valor do Pedido','Valor Total de Produtos','Descontos e Cupons','Comissão Total','Frete do Comprador','Total de Frete','Lucro Estimado','Cancelado por','Razão do Cancelamento','Nome do Anúncio','ID do Anúncio','SKU','Variação','Preço de Produto','Qtd. do Produto','SKU (Armazém)','Quantidade de Produtos','Nome do Produto','Custo do Produto','Nome de Comprador','ID do Comprador','Cidade','Estado','CEP','Método de Envio'];
+  const H=['Nº de Pedido da Plataforma','Nº de Pedido','Plataformas','Nome da Loja no UpSeller','Estado do Pedido','Hora do Pedido','Hora do Pagamento','Prazo de Envio','Hora de Envio','Valor do Pedido','Valor Total de Produtos','Descontos e Cupons','Comissão Total','Frete do Comprador','Total de Frete','Cancelado por','Razão do Cancelamento','Nome do Anúncio','ID do Anúncio','SKU','Variação','Preço de Produto','Qtd. do Produto','SKU (Armazém)','Quantidade de Produtos','Nome do Produto','Nome de Comprador','ID do Comprador','Cidade','Estado','CEP','Método de Envio'];
   const aoa=[H];
   const fmtD=t=>{const d=new Date(t);return`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`};
   const HW=[.3,.2,.1,.08,.08,.15,.4,.8,1.2,1.5,1.7,1.9,2.2,2.0,1.7,1.6,1.6,1.7,1.9,2.3,2.7,2.8,2.2,1.1];
@@ -903,27 +839,24 @@ function makeSample(){
       if(plat==='Mercado Livre'){if(prod>=79){bShip=0;tShip=+(18+R()*12).toFixed(2)}else{bShip=tShip=+(15+R()*10).toFixed(2)}}
       else if(plat==='Shopee'){bShip=R()<0.6?0:+(5+R()*10).toFixed(2);tShip=bShip}
       else{bShip=R()<0.7?0:7.9;tShip=bShip}
-      const sellerShip=Math.max(0,tShip-bShip);
-      const cost=its.reduce((a,i)=>a+(KITS[i.p[1]]?KITS[i.p[1]].reduce((s,c)=>s+c[2]*c[3],0):i.p[3])*i.qty,0);
-      const profit=+(prod-disc-comm-sellerShip-cost-prod*0.06).toFixed(2);
       const recent=d>=end-2*DAY,mid=d>=end-6*DAY;
       const hasFan=chosen.some(p=>p[1]==='VP-USB');
-      const r=R();let status='Concluído',reason='',by='';
-      if(r<(hasFan?0.13:0.035)){status='Cancelado';reason=wpick(['Comprador solicitou o cancelamento','Pagamento não aprovado','Endereço de entrega incorreto','Falta de estoque','Atraso no envio','Produto diferente do anúncio'],[40,20,10,8,(hasFan?30:8),hasFan?25:4]);by=reason.startsWith('Comprador')||reason.startsWith('Produto')?'Comprador':reason.startsWith('Pagamento')?'Sistema':'Vendedor'}
-      else if(r<(hasFan?0.16:0.05)){status='Devolvido';reason='Produto com defeito'}
+      const r=R();let status='Concluído',reason='',by='',paid=true;
+      if(r<0.09){status='Cancelado';paid=false;reason=wpick(['Pagamento atrasado por parte do cliente','Não é mais necessário','Comprado por engano'],[75,15,10]);by=reason.startsWith('Pagamento')?plat:'Comprador'}
+      else if(r<(hasFan?0.22:0.125)){status='Cancelado';reason=wpick(['Não é mais necessário','Comprado por engano','Endereço de entrega incorreto','Falta de estoque','Pacote perdido','Produto diferente do anúncio'],[40,15,10,8,(hasFan?30:8),hasFan?25:4]);by=/estoque|Endereço/.test(reason)?'Vendedor':reason==='Pacote perdido'?plat:'Comprador'}
+      else if(r<(hasFan?0.25:0.135)){status='Devolvido';reason='Produto com defeito'}
       else if(recent)status='Para Enviar';else if(mid)status='Enviado';
       const payT=t+Math.floor((2+R()*40)*6e4),handling=(3+R()*R()*62+(dt.getDay()===6?24:dt.getDay()===0?14:0))*36e5;
       const deadline=payT+(plat==='Mercado Livre'?30:48)*36e5;
-      const shipT=(status==='Cancelado'&&reason!=='Atraso no envio')||status==='Para Enviar'?'':fmtD(payT+handling);
+      const shipT=(status==='Cancelado'&&reason!=='Pacote perdido')||status==='Para Enviar'?'':fmtD(payT+handling);
       const pno=plat==='Shopee'?'2'+fmtD(t).slice(2,10).replace(/-/g,'')+Math.floor(R()*1e6).toString(36).toUpperCase().padStart(6,'0'):plat==='Mercado Livre'?'2000'+(8000000000+seq*7):'57'+(10000000000000+seq*13);
       const ono='UP'+(seq++);
       const ship=plat==='Shopee'?wpick(['Shopee Xpress','Correios'],[0.75,0.25]):plat==='Mercado Livre'?wpick(['Mercado Envios Coleta','Mercado Envios Flex','Mercado Envios Full'],[0.6,0.25,0.15]):'J&T Express';
-      const bad=status==='Cancelado';
       for(const it of its){
         const comps=KITS[it.p[1]]||[[it.p[1],it.p[0],1,it.p[3]]];
         for(const cp of comps){
-          aoa.push([pno,ono,plat,store,status,fmtD(t),fmtD(payT),fmtD(deadline),shipT,(prod-disc+bShip).toFixed(2).replace('.',','),prod.toFixed(2),disc,comm,bShip,tShip,bad?'':profit,by,reason,
-            it.p[0],'L'+it.p[1].replace(/\W/g,''),it.p[1],it.variation,it.price,it.qty,cp[0],cp[2]*it.qty,cp[1],cp[3],c.name,c.id,c.city,c.uf,c.cep,ship]);
+          aoa.push([pno,ono,plat,store,status,fmtD(t),paid?fmtD(payT):'',fmtD(deadline),shipT,(prod-disc+bShip).toFixed(2).replace('.',','),prod.toFixed(2),disc,comm,bShip,tShip,by,reason,
+            it.p[0],'L'+it.p[1].replace(/\W/g,''),it.p[1],it.variation,it.price,it.qty,cp[0],cp[2]*it.qty,cp[1],c.name,c.id,c.city,c.uf,c.cep,ship]);
         }
       }
     }
@@ -932,7 +865,7 @@ function makeSample(){
 }
 
 /* ================= navegação e eventos ================= */
-const RENDER={geral:renderGeral,diagnostico:renderDiagnostico,produtos:renderProdutos,publico:renderPublico,comportamento:renderComportamento,financeiro:renderFinanceiro,operacao:renderOperacao,dados:renderDados};
+const RENDER={geral:renderGeral,diagnostico:renderDiagnostico,produtos:renderProdutos,publico:renderPublico,comportamento:renderComportamento,operacao:renderOperacao,dados:renderDados};
 function showTab(name){
   if(!RENDER[name])name='geral';active=name;
   $$('.tab-btn').forEach(b=>b.setAttribute('aria-selected',b.dataset.tab===name));

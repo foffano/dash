@@ -93,20 +93,20 @@ Enquanto nada for importado, o painel mostra **dados de exemplo** fictícios.
 
 | Página | Conteúdo |
 |---|---|
-| Visão geral | Faturamento, pedidos, ticket, lucro, margem, clientes e cancelamentos, comparados ao período anterior |
-| Diagnóstico | Leituras automáticas: crescimento, dependência de canal, curva ABC, produtos com margem baixa, pedidos com prejuízo, cancelamentos, atrasos, recompra, geografia, horários de pico, efeito salário, tendências |
-| Produtos | Curva ABC, ranking, margem e cancelamento por produto, comprados juntos, em alta e em queda |
+| Visão geral | Faturamento, pedidos, ticket, unidades, clientes e taxa de cancelamento, comparados ao período anterior |
+| Diagnóstico | Leituras automáticas: crescimento, dependência de canal, curva ABC, cancelamentos, pedidos não pagos, atrasos, recompra, geografia, horários de pico, efeito salário, tendências |
+| Produtos | Curva ABC, ranking, cancelamento por produto, comprados juntos, em alta e em queda |
 | Público | Mapa por estado, penetração vs. população (IBGE 2022), regiões, cidades, clientes novos e recorrentes, frequência de compra, valor do pedido, melhores clientes |
 | Quando compram | Mapa de calor dia × hora, dia da semana, hora, dia do mês |
-| Financeiro | Do valor dos produtos ao lucro, rentabilidade por plataforma, margem mensal, pedidos com prejuízo |
-| Operação | Situação dos pedidos, motivos de cancelamento, tempo até envio, envios no prazo, métodos de envio |
+| Operação | Situação dos pedidos, pedidos não pagos à parte, causas e motivos de cancelamento, tempo até envio, envios no prazo, métodos de envio |
 
 ## Como os números são calculados
 
-- **Pedido válido**: qualquer pedido que não esteja cancelado, devolvido ou aguardando pagamento.
+- **Pedido válido**: qualquer pedido que não esteja cancelado, devolvido ou sem pagamento.
+- **Não pago**: pedido que o comprador nunca pagou. Pode estar "Não Pago" ou cancelado sem "Hora do Pagamento" (ex.: "Pagamento atrasado por parte do cliente", "Unpaid Order", ou o comprador desistiu antes de pagar). Não conta como venda nem como cancelamento.
+- **Taxa de cancelamento**: (cancelados depois de pagos + devolvidos) ÷ pedidos pagos. Os cancelamentos pagos são agrupados por causa: comprador desistiu, problema na entrega, vendedor (estoque, endereço), devolução ou outro.
 - **Faturamento**: coluna "Valor do Pedido" (se ausente, "Valor Total de Produtos" ou preço × quantidade).
-- **Lucro estimado**: coluna "Lucro Estimado" da UpSeller. Sem ela, o painel estima: produtos − descontos − comissão − frete pago pelo vendedor − custo.
-- **Lucro por produto**: o lucro do pedido é dividido entre os itens proporcionalmente ao valor de cada um.
+- **Lucro e margem**: não aparecem. A UpSeller não tem o custo dos produtos cadastrado, então qualquer lucro seria inventado.
 - **Cliente**: identificado por "ID do Comprador" (por plataforma) ou, na falta dele, nome + CEP.
 - **Estado**: coluna "Estado" (sigla ou nome) ou, se vazia, deduzido pelo CEP.
 - **KIT SKU**: as várias linhas de um kit são reunidas em um único item do pedido.
