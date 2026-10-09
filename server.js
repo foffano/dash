@@ -49,6 +49,12 @@ db.exec(`
     updated_at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS orders_t ON orders(t);
+  CREATE TABLE IF NOT EXISTS names (
+    name TEXT PRIMARY KEY,
+    f INTEGER NOT NULL,
+    m INTEGER NOT NULL,
+    fetched_at INTEGER NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS imports (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     file TEXT, at INTEGER, rows INTEGER, created INTEGER, updated INTEGER, min_t INTEGER, max_t INTEGER
@@ -60,6 +66,9 @@ const q = {
   allOrders: db.prepare('SELECT data FROM orders ORDER BY t'),
   countOrders: db.prepare('SELECT COUNT(*) AS n FROM orders'),
   addImport: db.prepare('INSERT INTO imports (file, at, rows, created, updated, min_t, max_t) VALUES (?, ?, ?, ?, ?, ?, ?)'),
+  allNames: db.prepare('SELECT name, f, m FROM names'),
+  getName: db.prepare('SELECT 1 FROM names WHERE name = ?'),
+  putName: db.prepare('INSERT OR REPLACE INTO names (name, f, m, fetched_at) VALUES (?, ?, ?, ?)'),
   allImports: db.prepare('SELECT id, file, at, rows, created, updated, min_t AS minT, max_t AS maxT FROM imports ORDER BY at DESC'),
 };
 
@@ -165,7 +174,7 @@ function streamOrders(req, res, { wrap = false } = {}) {
 }
 
 /* ---------------- arquivos estáticos ---------------- */
-const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json' };
+const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json; charset=utf-8' };
 const VENDOR = {
   '/vendor/chart.umd.js': path.join(__dirname, 'node_modules', 'chart.js', 'dist', 'chart.umd.js'),
   '/vendor/xlsx.full.min.js': path.join(__dirname, 'node_modules', 'xlsx', 'dist', 'xlsx.full.min.js'),
@@ -191,6 +200,44 @@ function serveStatic(req, res, pathname) {
   res.writeHead(200, { ...headers, 'Content-Length': entry.body.length });
   res.end(req.method === 'HEAD' ? undefined : entry.body);
 }
+
+/* ---------------- nomes (gênero estimado) ---------------- */
+// Quantas pessoas de cada sexo têm cada primeiro nome, segundo o Censo 2010 do IBGE.
+// Só o primeiro nome sai do servidor, sem sobrenome nem outro dado; o resultado fica guardado.
+const IBGE_NAMES = 'https://servicodados.ibge.gov.br/api/v2/censos/nomes/';
+const NAME_RE = /^[A-Z]{2,30}$/;
+async function ibgeCount(names, sexo) {
+  const fail = () => Object.assign(new Error('O IBGE não respondeu. Tente de novo mais tarde.'), { status: 502 });
+  // O servidor do IBGE às vezes não aceita a conexão; na segunda ou terceira tentativa costuma responder.
+  let data;
+  for (let attempt = 1; !data; attempt++) {
+    try {
+      const r = await fetch(IBGE_NAMES + names.join('%7C') + '?sexo=' + sexo, { signal: AbortSignal.timeout(20e3) });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      data = await r.json();
+    } catch (e) {
+      console.warn(`IBGE nomes (tentativa ${attempt}):`, e.cause?.code || e.message);
+      if (attempt >= 3) throw fail();
+      await new Promise(res => setTimeout(res, attempt * 1500));
+    }
+  }
+  const out = new Map();
+  for (const x of data) out.set(x.nome, (x.res || []).reduce((a, p) => a + (p.frequencia || 0), 0));
+  return out;
+}
+async function resolveNames(list) {
+  const missing = [...new Set(list.filter(n => typeof n === 'string' && NAME_RE.test(n)))].filter(n => !q.getName.get(n)).slice(0, 600);
+  for (let i = 0; i < missing.length; i += 100) {
+    const chunk = missing.slice(i, i + 100);
+    const [f, m] = await Promise.all([ibgeCount(chunk, 'F'), ibgeCount(chunk, 'M')]);
+    const now = Date.now();
+    db.exec('BEGIN');
+    try { for (const n of chunk) q.putName.run(n, f.get(n) || 0, m.get(n) || 0, now); db.exec('COMMIT'); }
+    catch (e) { db.exec('ROLLBACK'); throw e; }
+  }
+  return missing.length;
+}
+const namesMap = () => Object.fromEntries(q.allNames.all().map(r => [r.name, [r.f, r.m]]));
 
 /* ---------------- API ---------------- */
 const clean = (v, max = 300) => String(v ?? '').slice(0, max);
@@ -235,6 +282,12 @@ async function api(req, res, pathname) {
     } catch (e) { db.exec('ROLLBACK'); throw e; }
     return json(req, res, 200, { created, updated });
   }
+  if (pathname === '/api/names' && m === 'GET') return json(req, res, 200, namesMap());
+  if (pathname === '/api/names' && m === 'POST') {
+    const b = await readJson(req);
+    const added = await resolveNames(Array.isArray(b.names) ? b.names : []);
+    return json(req, res, 200, { added, names: namesMap() });
+  }
   if (pathname === '/api/imports' && m === 'GET') return json(req, res, 200, q.allImports.all());
   if (pathname === '/api/imports' && m === 'POST') {
     const b = await readJson(req);
@@ -243,7 +296,7 @@ async function api(req, res, pathname) {
     return json(req, res, 200, { ok: true });
   }
   if (pathname === '/api/data' && m === 'DELETE') {
-    db.exec('DELETE FROM orders; DELETE FROM imports;');
+    db.exec('DELETE FROM orders; DELETE FROM imports;'); // o cache de nomes não tem dados de clientes e fica
     return json(req, res, 200, { ok: true });
   }
   return json(req, res, 404, { error: 'Rota não encontrada.' });

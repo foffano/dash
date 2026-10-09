@@ -202,6 +202,29 @@ function cancelGroup(o){
   if(/buyer|comprador/.test(by))return 'Comprador desistiu';
   return 'Plataforma ou outro motivo';
 }
+/* ---- perfil: gênero estimado pelo primeiro nome e porte da cidade ---- */
+const NAMES=new Map(); // NOME -> [mulheres, homens] com esse primeiro nome no Censo 2010 (IBGE)
+let MUN=null;          // {UF: {cidade normalizada: [população, capital 0/1]}} (IBGE 2022)
+const GENDER_LABEL={F:'Mulheres',M:'Homens','?':'Não identificado'};
+const CITY_SIZES=['Capital','Cidade grande (500 mil+)','Cidade média (100–500 mil)','Cidade pequena (20–100 mil)','Até 20 mil habitantes'];
+function firstName(o){
+  const n=(o.buyerName||o.recipient||'').trim();
+  // Sem nome, apelido de usuário (fulano_123, maria.silva) ou nome mascarado: não dá para estimar.
+  if(!n||/[\d_@*.]/.test(n)||(!/\s/.test(n)&&n===n.toLowerCase()))return '';
+  const k=norm(n.split(/\s+/)[0]).toUpperCase();
+  return /^[A-Z]{2,30}$/.test(k)?k:'';
+}
+function genderOf(fname){
+  const c=fname&&NAMES.get(fname);if(!c)return '?';
+  const t=c[0]+c[1];if(!t)return '?';
+  const f=c[0]/t;return f>=0.9?'F':f<=0.1?'M':'?';
+}
+function citySizeOf(o){
+  const v=MUN&&o.uf&&o.city?MUN[o.uf]?.[norm(o.city)]:null;if(!v)return '';
+  const[pop,cap]=v;
+  return cap?CITY_SIZES[0]:pop>=5e5?CITY_SIZES[1]:pop>=1e5?CITY_SIZES[2]:pop>=2e4?CITY_SIZES[3]:CITY_SIZES[4];
+}
+function applyProfile(o){o.fname=firstName(o);o.gender=genderOf(o.fname);o.citySize=citySizeOf(o)}
 function cityTitle(c){return c.toLowerCase().replace(/(^|\s|-)(\p{L})/gu,(m,a,b)=>a+b.toUpperCase()).replace(/\s(De|Da|Do|Das|Dos|E)\s/g,m=>m.toLowerCase())}
 function enrich(o,hasPayT=true){
   o.cls=classify(o,hasPayT);
@@ -213,6 +236,7 @@ function enrich(o,hasPayT=true){
   const bid=o.buyerId, bn=norm(o.buyerName||o.recipient);
   o.cust=bid?o.platform+':'+bid:bn?'n:'+bn+':'+(o.cep||'').slice(0,5):null;
   o.cityN=o.city?cityTitle(o.city):'';
+  applyProfile(o);
   return o;
 }
 
@@ -225,7 +249,7 @@ async function api(path,{method='GET',body}={}){
   if(!r.ok)throw new Error(data?.error||`Erro ${r.status} no servidor.`);
   return data;
 }
-const stripDerived=o=>{const{cls,cancelGroup,itemsRev,units,prodTotal,rev,cust,cityN,...raw}=o;return raw};
+const stripDerived=o=>{const{cls,cancelGroup,itemsRev,units,prodTotal,rev,cust,cityN,fname,gender,citySize,...raw}=o;return raw};
 
 /* ================= estado ================= */
 const state={orders:[],byKey:new Map(),imports:[],sample:false,platColor:new Map()};
@@ -233,7 +257,7 @@ const F={period:'90',from:null,to:null,platform:'all',store:'all'};
 let S=null, active='geral', TH={};
 const charts={};
 const dirty=new Set();
-const ui={prodSort:{k:'rev',dir:-1},custSort:{k:'rev',dir:-1},ufSort:{k:'rev',dir:-1},mapMetric:'rev',insFilter:'all',pGroup:'sku',pCurve:'',pSearch:''};
+const ui={prodSort:{k:'rev',dir:-1},genderSort:{k:'k',dir:1},custSort:{k:'rev',dir:-1},ufSort:{k:'rev',dir:-1},mapMetric:'rev',insFilter:'all',pGroup:'sku',pCurve:'',pSearch:''};
 try{const sv=JSON.parse(localStorage.getItem('raiox-ui')||'{}');if(sv.period)F.period=sv.period;if(sv.pGroup)ui.pGroup=sv.pGroup}catch(e){}
 const saveUi=()=>{try{localStorage.setItem('raiox-ui',JSON.stringify({period:F.period,pGroup:ui.pGroup}))}catch(e){}};
 
@@ -364,13 +388,39 @@ function aggStates(){return memo('uf',()=>{
   const m=new Map(),cities=new Map();let tot=0,totN=0;
   for(const o of S.valid){
     if(!o.uf)continue;tot+=o.rev||0;totN++;
-    let g=m.get(o.uf);if(!g)m.set(o.uf,g={k:o.uf,n:0,rev:0,cust:new Set()});
-    g.n++;g.rev+=o.rev||0;if(o.cust)g.cust.add(o.cust);
+    let g=m.get(o.uf);if(!g)m.set(o.uf,g={k:o.uf,n:0,rev:0,cust:new Set(),F:0,M:0});
+    g.n++;g.rev+=o.rev||0;if(o.cust)g.cust.add(o.cust);if(o.gender==='F')g.F++;else if(o.gender==='M')g.M++;
     if(o.cityN){const ck=o.cityN+' / '+o.uf;let c=cities.get(ck);if(!c)cities.set(ck,c={k:ck,n:0,rev:0});c.n++;c.rev+=o.rev||0}
   }
   const list=[...m.values()].map(g=>({...g,nc:g.cust.size,ticket:g.n?g.rev/g.n:0,share:tot?g.rev/tot:0,nShare:totN?g.n/totN:0,
-    idx:totN&&POP[g.k]?(g.n/totN)/(POP[g.k]/POP_TOT):0,region:REGION[g.k]})).sort((a,b)=>b.rev-a.rev);
+    idx:totN&&POP[g.k]?(g.n/totN)/(POP[g.k]/POP_TOT):0,fem:g.F+g.M>=10?g.F/(g.F+g.M):null,region:REGION[g.k]})).sort((a,b)=>b.rev-a.rev);
   return{list,tot,totN,cities:[...cities.values()].sort((a,b)=>b.rev-a.rev),coverage:S.valid.length?totN/S.valid.length:0};
+})}
+function aggProfile(){return memo('profile',()=>{
+  const g={};for(const k of ['F','M','?'])g[k]={k,n:0,rev:0,units:0,cust:new Set(),paid:0,bad:0,hour:Array(24).fill(0)};
+  const hist=new Map();for(const o of S.scope)if(o.cls==='ok'&&o.cust)hist.set(o.cust,(hist.get(o.cust)||0)+1);
+  for(const o of S.cur){
+    const x=g[o.gender||'?'];
+    if(o.cls!=='unpaid'){x.paid++;if(o.cls==='cancelled'||o.cls==='returned')x.bad++}
+    if(o.cls!=='ok')continue;
+    x.n++;x.rev+=o.rev||0;x.units+=o.units;if(o.cust)x.cust.add(o.cust);if(o.t!=null)x.hour[new Date(o.t).getHours()]++;
+  }
+  for(const x of Object.values(g)){
+    let rep=0;for(const c of x.cust)if(hist.get(c)>=2)rep++;
+    x.nc=x.cust.size;x.repeat=x.nc?rep/x.nc:NaN;x.ticket=x.n?x.rev/x.n:0;x.upo=x.n?x.units/x.n:0;x.cancel=x.paid?x.bad/x.paid:NaN;
+  }
+  const tf=g.F.n,tm=g.M.n,known=tf+tm;
+  const pm=new Map();
+  for(const o of S.valid){
+    if(o.gender!=='F'&&o.gender!=='M')continue;
+    const seen=new Set();
+    for(const it of o.items){const k=prodKey(it,'sku');if(seen.has(k))continue;seen.add(k);
+      let p=pm.get(k);if(!p)pm.set(k,p={k,name:it.name,F:0,M:0});p[o.gender]++}
+  }
+  const prods=[...pm.values()].map(p=>({...p,n:p.F+p.M,fShare:p.F/(p.F+p.M)})).filter(p=>p.n>=Math.max(5,known*0.005));
+  const sizes=CITY_SIZES.map(label=>({label,n:0,rev:0,F:0,M:0}));const sz=new Map(sizes.map(x=>[x.label,x]));let noCity=0;
+  for(const o of S.valid){const x=sz.get(o.citySize);if(!x){noCity++;continue}x.n++;x.rev+=o.rev||0;if(o.gender==='F')x.F++;else if(o.gender==='M')x.M++}
+  return{g,known,fShare:known?tf/known:NaN,coverage:S.valid.length?known/S.valid.length:0,prods,sizes,noCity};
 })}
 function aggTime(){return memo('time',()=>{
   const heat=Array.from({length:7},()=>Array(24).fill(0)),wdRev=Array(7).fill(0),hour=Array(24).fill(0),domRev=Array(31).fill(0);
@@ -530,6 +580,21 @@ function buildInsights(){return memo('ins',()=>{
     else if(rr>=0.2)add('good','Público',`${fmtP(rr)} dos clientes voltaram a comprar`,`Boa fidelização. Cada cliente gerou em média <strong>${fmtR(cu.ltv)}</strong> no histórico.${cu.medianGap?` Intervalo típico entre compras: <strong>${fmtN(cu.medianGap)} dias</strong>, um bom momento para enviar um cupom.`:''}`);
     else add('info','Público',`${fmtP(rr)} dos clientes compraram mais de uma vez`,`Valor médio por cliente no histórico: <strong>${fmtR(cu.ltv)}</strong>.${cu.medianGap?` Intervalo típico entre compras: ${fmtN(cu.medianGap)} dias.`:''}`);
   }
+  // perfil
+  const pf=aggProfile();
+  if(pf.known>=30&&pf.coverage>=0.2){
+    const F_=pf.g.F,M_=pf.g.M,fem=pf.fShare,maj=fem>=0.5?'mulheres':'homens';
+    const tk=F_.n>=10&&M_.n>=10?` Ticket médio: mulheres <strong>${fmtR(F_.ticket)}</strong>, homens <strong>${fmtR(M_.ticket)}</strong>.`:'';
+    const skew=pf.prods.slice().sort((a,b)=>Math.abs(b.fShare-fem)-Math.abs(a.fShare-fem))[0];
+    const sk=skew&&Math.abs(skew.fShare-fem)>0.15?` O produto com público mais diferente da média é <strong>${esc(skew.name)}</strong> (${fmtP(skew.fShare,0)} mulheres).`:'';
+    add('info','Público',`${fmtP(Math.max(fem,1-fem),0)} das compras identificadas são de ${maj}`,`Gênero estimado pelo primeiro nome em ${fmtP(pf.coverage,0)} dos pedidos.${tk}${sk} Use isso nas fotos, no texto dos anúncios e na segmentação de campanhas.`);
+  }
+  const cityKnown=sum(pf.sizes,x=>x.rev);
+  if(cityKnown>0&&S.valid.length>=30){
+    const top=pf.sizes.slice().sort((a,b)=>b.rev-a.rev)[0];const cap=pf.sizes[0].rev/cityKnown,small=(pf.sizes[3].rev+pf.sizes[4].rev)/cityKnown;
+    add('info','Público',small>=0.35?`${fmtP(small,0)} do faturamento vem de cidades com menos de 100 mil habitantes`:`${fmtP(cap,0)} do faturamento vem de capitais`,
+      `A maior fatia é <strong>${top.label.toLowerCase()}</strong> (${fmtP(top.rev/cityKnown,0)}). ${small>=0.35?'Público do interior costuma pesar mais frete e prazo na decisão: destaque frete grátis e prazo de entrega.':'Público de cidade grande compara mais preço e prazo: entrega rápida (Full, Flex) faz diferença.'}`);
+  }
   // geografia
   const st=aggStates();
   if(st.list.length>=3){
@@ -646,6 +711,7 @@ function renderPublico(){
     kpi('Valor por cliente',fmtR(cu.ltv),null,null,{hint:'histórico completo'}),
     kpi('Intervalo de recompra',cu.medianGap?fmtN(cu.medianGap)+' dias':'—',null,null,{hint:'mediana'})
   ].join(''):`<div class="panel" style="grid-column:1/-1"><p class="note">Nenhum cliente identificado. Exporte as colunas <b>ID do Comprador</b> ou <b>Nome de Comprador</b> para analisar recompra e fidelidade.</p></div>`;
+  renderPerfil();
   // mapa
   const met=ui.mapMetric,by=new Map(st.list.map(g=>[g.k,g]));
   const vals=st.list.map(g=>met==='ticket'?(g.n>=3?g.ticket:0):g[met]);const mx=Math.max(...vals,0)||1;
@@ -668,6 +734,7 @@ function renderPublico(){
     {k:'rev',label:'Faturamento',num:true,fmt:g=>fmtR(g.rev)},
     {k:'share',label:'% receita',num:true,fmt:g=>fmtP(g.share)},
     {k:'ticket',label:'Ticket',num:true,fmt:g=>fmtR(g.ticket)},
+    {k:'fem',label:'Mulheres',num:true,fmt:g=>g.fem==null?'<span class="muted">—</span>':fmtP(g.fem,0)},
     {k:'idx',label:'Penetração',num:true,fmt:g=>`<span class="${g.idx>=1.2?'pos':g.idx<0.6?'neg':''}">${NUM1.format(g.idx)}</span>`}
   ],st.list,ui.ufSort,{onSort:renderPublico});
   // novos x recorrentes
@@ -696,6 +763,44 @@ function renderPublico(){
     {k:'first',label:'Primeira compra',num:true,fmt:x=>fmtDate(x.first)},
     {k:'last',label:'Última compra',num:true,fmt:x=>fmtDate(x.last)}
   ],cu.top,ui.custSort,{limit:50,onSort:renderPublico});
+}
+
+function renderPerfil(){
+  const pf=aggProfile(),G=pf.g,tot=S.valid.length;
+  const pending=state.namesPending;
+  $('#genderBox').innerHTML=barList(['F','M','?'].map(k=>({label:GENDER_LABEL[k],value:G[k].n,k})),{fmt:fmtN,colorFn:r=>r.k==='F'?TH['--s1']:r.k==='M'?TH['--s2']:TH['--fg-3'],sub:r=>fmtP(tot?r.value/tot:0,0),empty:'Sem pedidos válidos no período.'});
+  $('#genderNote').textContent=pending?'Consultando os primeiros nomes no IBGE…':`Estimado pelo primeiro nome do comprador (Censo 2010, IBGE). Fica como não identificado quem não tem nome na planilha (a Shopee não envia), usa apelido ou tem nome comum aos dois sexos.`;
+  const cityKnown=sum(pf.sizes,x=>x.n);
+  $('#citySizeBox').innerHTML=barList(pf.sizes.filter(x=>x.n).map(x=>({label:x.label,value:x.rev,n:x.n})),{sub:r=>`${fmtN(r.n)} ped. · ticket ${fmtR(r.n?r.value/r.n:0)}`,empty:'Exporte as colunas Cidade e Estado.'});
+  $('#cityNote').textContent=pf.noCity&&tot?`${fmtP(pf.noCity/tot,0)} dos pedidos sem cidade reconhecida.`:'';
+  const rows=['F','M','?'].map(k=>G[k]).filter(x=>x.n||x.paid);
+  table($('#genderTable'),[
+    {k:'k',label:'Perfil',v:x=>'FM?'.indexOf(x.k),fmt:x=>`<i class="dot" style="background:${x.k==='F'?TH['--s1']:x.k==='M'?TH['--s2']:TH['--fg-3']}"></i>${GENDER_LABEL[x.k]}`},
+    {k:'n',label:'Pedidos',num:true,fmt:x=>fmtN(x.n)},
+    {k:'share',label:'% pedidos',num:true,v:x=>tot?x.n/tot:0,fmt:x=>fmtP(tot?x.n/tot:0,0)},
+    {k:'rev',label:'Faturamento',num:true,fmt:x=>fmtR0(x.rev)},
+    {k:'ticket',label:'Ticket médio',num:true,fmt:x=>fmtR(x.ticket)},
+    {k:'upo',label:'Itens/pedido',num:true,fmt:x=>NUM1.format(x.upo)},
+    {k:'nc',label:'Clientes',num:true,fmt:x=>fmtN(x.nc)},
+    {k:'repeat',label:'Recompra',num:true,fmt:x=>fmtP(x.repeat)},
+    {k:'cancel',label:'Cancelamento',num:true,fmt:x=>fmtP(x.cancel)}
+  ],rows,ui.genderSort,{onSort:renderPerfil});
+  const fem=pf.fShare,ok=pf.known>=30;
+  const li=(list,f)=>list.length?barList(list.map(p=>({label:p.name,value:f(p),n:p.n})),{fmt:v=>fmtP(v,0),max:1,sub:r=>fmtN(r.n)+' ped.'}):`<div class="empty">${ok?'Nenhum produto se destaca.':'Poucos pedidos com gênero identificado.'}</div>`;
+  $('#prodF').innerHTML=li(ok?pf.prods.filter(p=>p.fShare>fem+0.05).sort((a,b)=>b.fShare-a.fShare).slice(0,6):[],p=>p.fShare);
+  $('#prodM').innerHTML=li(ok?pf.prods.filter(p=>p.fShare<fem-0.05).sort((a,b)=>a.fShare-b.fShare).slice(0,6):[],p=>1-p.fShare);
+  $('#prodAvg').textContent=Number.isFinite(fem)?`% de compradoras · média da loja ${fmtP(fem,0)}`:'';
+  $('#prodAvgM').textContent=Number.isFinite(fem)?`% de compradores · média da loja ${fmtP(1-fem,0)}`:'';
+  const pct=a=>{const t=sum(a,v=>v);return a.map(v=>t?v/t:0)};
+  mkChart('cGenderHour',{type:'line',data:{labels:Array.from({length:24},(_,i)=>i+'h'),datasets:[
+    {label:'Mulheres',data:pct(G.F.hour),borderColor:TH['--s1'],backgroundColor:TH['--s1'],borderWidth:2,pointRadius:0,pointHoverRadius:4,tension:.3},
+    {label:'Homens',data:pct(G.M.hour),borderColor:TH['--s2'],backgroundColor:TH['--s2'],borderWidth:2,pointRadius:0,pointHoverRadius:4,tension:.3}]},
+    options:chartOpts({money:false,pct:true,legend:true})});
+  const sz=pf.sizes.filter(x=>x.F+x.M>0);
+  mkChart('cGenderCity',{type:'bar',data:{labels:sz.map(x=>x.label.replace(/ \(.*\)/,'')),datasets:[
+    barDs('Mulheres',sz.map(x=>x.F/(x.F+x.M)),TH['--s1'],{borderSkipped:false,borderRadius:0}),
+    barDs('Homens',sz.map(x=>x.M/(x.F+x.M)),TH['--s2'],{borderSkipped:false,borderRadius:0})]},
+    options:chartOpts({money:false,pct:true,stacked:true,legend:true,max:1})});
 }
 
 /* ================= aba: comportamento ================= */
@@ -786,7 +891,7 @@ async function importFiles(files){
       await api('/api/imports',{method:'POST',body:{file:f.name,rows:rowsN,created:c,updated:u,minT:Number.isFinite(mn)?mn:null,maxT:Number.isFinite(mx)?mx:null}});
     }catch(e){if(e instanceof AuthError)return;errors.push(`${f.name}: ${e.message||e}`)}
   }
-  if(created+updated>0){await loadData();refresh()}
+  if(created+updated>0){await loadData();refresh();resolveNames()}
   else renderDados();
   toast(errors.length?`Não consegui importar ${errors.join(' · ')}`:`Importado: ${fmtN(created)} pedidos novos, ${fmtN(updated)} atualizados.`,errors.length?8000:4000);
 }
@@ -800,6 +905,7 @@ function makeSample(){
   const P=[['Garrafa Térmica Inox 500ml','GT-500',59.9,22,['Preto','Branco','Rosa','Verde']],['Garrafa Térmica Inox 1L','GT-1000',84.9,34,['Preto','Inox']],['Kit 3 Potes Herméticos de Vidro','PH-K3',69.9,28],['Organizador de Gaveta Bambu','OG-BAM',49.9,18],['Luminária LED Recarregável','LL-REC',79.9,31],['Mini Processador Elétrico USB','MP-USB',54.9,21],['Tapete Antiderrapante Banheiro','TA-BAN',39.9,14,['Cinza','Bege']],['Escova Secadora Rotativa','ES-ROT',149.9,68],['Fone Bluetooth TWS','FB-TWS',89.9,38,['Preto','Branco']],['Suporte Veicular Magnético','SC-MAG',29.9,9],['Capa Impermeável para Mala','CI-MAL',34.9,11],['Kit Pincéis de Maquiagem 12un','KP-12',44.9,15],['Umidificador Ultrassônico','UM-ULT',99.9,46],['Smartwatch D20','SW-D20',119.9,61,['Preto','Rosa']],['Mochila Notebook Antifurto','MN-ANT',129.9,58],['Cabo USB-C Turbo 2m','CB-C2',24.9,6],['Carregador Rápido 20W','CR-20W',49.9,19],['Forma de Silicone Air Fryer','FS-AIR',29.9,8],['Jogo de Lençol Microfibra Casal','JL-CAS',89.9,39,['Cinza','Azul','Bege']],['Comedouro Pet Inox','PR-PET',32.9,12],['Escova Removedora de Pelos Pet','ER-PET',27.9,7],['Lixeira Automática com Sensor','LX-SEN',139.9,72],['Ventilador Portátil USB','VP-USB',39.9,27],['Kit 2 Garrafas Térmicas 500ml','KIT-GT2',109.9,0],['Kit Carregador 20W + Cabo USB-C','KIT-CRCB',64.9,0]];
   const KITS={'KIT-GT2':[['GT-500','Garrafa Térmica Inox 500ml',2,22]],'KIT-CRCB':[['CR-20W','Carregador Rápido 20W',1,19],['CB-C2','Cabo USB-C Turbo 2m',1,6]]};
   const AFF={'CR-20W':'CB-C2','CB-C2':'CR-20W','PR-PET':'ER-PET','ER-PET':'PR-PET','GT-500':'PH-K3','PH-K3':'GT-500','KP-12':'ES-ROT','ES-ROT':'KP-12','FS-AIR':'PH-K3','JL-CAS':'TA-BAN'};
+  const SKEW_F=new Set(['ES-ROT','KP-12','JL-CAS','TA-BAN']),SKEW_M=new Set(['SC-MAG','MN-ANT','CR-20W','SW-D20']);
   const FN=['Ana','Maria','Juliana','Fernanda','Camila','Beatriz','Larissa','Patrícia','Aline','Letícia','Bruna','Gabriela','Carla','Renata','Vanessa','Amanda','Jéssica','Débora','João','Pedro','Lucas','Gabriel','Rafael','Felipe','Bruno','Carlos','Marcos','Thiago','Rodrigo','André','Diego','Mateus'];
   const LN=['Silva','Santos','Oliveira','Souza','Rodrigues','Ferreira','Alves','Pereira','Lima','Gomes','Costa','Ribeiro','Martins','Carvalho','Almeida','Lopes','Soares','Fernandes','Vieira','Barbosa','Rocha','Dias','Nascimento','Moreira'];
   const CIT={SP:['São Paulo','São Paulo','São Paulo','Campinas','Guarulhos','Santo André','Osasco','Ribeirão Preto','Sorocaba','Santos','São José dos Campos'],RJ:['Rio de Janeiro','Rio de Janeiro','Niterói','Duque de Caxias','Nova Iguaçu','São Gonçalo'],MG:['Belo Horizonte','Belo Horizonte','Uberlândia','Contagem','Juiz de Fora','Betim'],PR:['Curitiba','Curitiba','Londrina','Maringá','Ponta Grossa'],RS:['Porto Alegre','Porto Alegre','Caxias do Sul','Pelotas','Canoas'],SC:['Florianópolis','Joinville','Blumenau','São José'],BA:['Salvador','Salvador','Feira de Santana','Vitória da Conquista'],PE:['Recife','Recife','Jaboatão dos Guararapes','Olinda','Caruaru'],CE:['Fortaleza','Fortaleza','Caucaia','Juazeiro do Norte'],GO:['Goiânia','Goiânia','Aparecida de Goiânia','Anápolis'],DF:['Brasília'],ES:['Vitória','Vila Velha','Serra'],PA:['Belém','Ananindeua'],AM:['Manaus'],MA:['São Luís','Imperatriz'],PB:['João Pessoa','Campina Grande'],RN:['Natal','Mossoró'],MT:['Cuiabá','Várzea Grande'],MS:['Campo Grande','Dourados'],AL:['Maceió'],PI:['Teresina'],SE:['Aracaju'],RO:['Porto Velho'],TO:['Palmas'],AC:['Rio Branco'],AP:['Macapá'],RR:['Boa Vista']};
@@ -826,9 +932,9 @@ function makeSample(){
       const store=plat==='Shopee'&&R()<0.22?'Casa Prática Outlet':'Casa Prática Oficial';
       let c;const pool=cust[plat];
       if(pool.length>40&&R()<0.19){c=pool[Math.floor(Math.pow(R(),0.7)*pool.length)]}
-      else{const uf=wpick(ufs,ufW);c={name:pick(FN)+' '+pick(LN)+(R()<0.5?' '+pick(LN):''),id:(plat==='Shopee'?'shp':plat==='Mercado Livre'?'ml':'tt')+(100000+Math.floor(R()*8999999)),uf,city:pick(CIT[uf]),cep:cepFor(uf)};pool.push(c)}
+      else{const uf=wpick(ufs,ufW);const fi=R()<0.62?Math.floor(R()*18):18+Math.floor(R()*14);c={fem:fi<18,name:FN[fi]+' '+pick(LN)+(R()<0.5?' '+pick(LN):''),id:(plat==='Shopee'?'shp':plat==='Mercado Livre'?'ml':'tt')+(100000+Math.floor(R()*8999999)),uf,city:pick(CIT[uf]),cep:cepFor(uf)};pool.push(c)}
       const nItems=wpick([1,2,3],[0.79,0.16,0.05]);const chosen=[];
-      const w=P.map((p,i)=>{let x=rank[i];if(p[1]==='FB-TWS')x*=0.4+2.2*prog;if(p[1]==='UM-ULT')x*=(m>=4&&m<=8)?2.2:0.5;if(p[1]==='VP-USB')x*=(m>=9||m<=2)?2.4:0.3;if(p[1]==='LL-REC')x*=1.6-1.2*prog;if(p[1].startsWith('KIT'))x*=0.35;return x});
+      const w=P.map((p,i)=>{let x=rank[i];if(p[1]==='FB-TWS')x*=0.4+2.2*prog;if(p[1]==='UM-ULT')x*=(m>=4&&m<=8)?2.2:0.5;if(p[1]==='VP-USB')x*=(m>=9||m<=2)?2.4:0.3;if(p[1]==='LL-REC')x*=1.6-1.2*prog;if(p[1].startsWith('KIT'))x*=0.35;if(SKEW_F.has(p[1]))x*=c.fem?1.8:0.3;if(SKEW_M.has(p[1]))x*=c.fem?0.4:2.2;return x});
       let first=wpick(P,w);chosen.push(first);
       while(chosen.length<nItems){let nx=AFF[chosen[0][1]]&&R()<0.55?P.find(p=>p[1]===AFF[chosen[0][1]]):wpick(P,w);if(!chosen.includes(nx))chosen.push(nx);else if(R()<0.3)break}
       const its=chosen.map(p=>({p,qty:wpick([1,2,3],[0.86,0.11,0.03]),price:+(p[2]*(plat==='Mercado Livre'?1.08:plat==='TikTok Shop'?0.97:1)).toFixed(2),variation:p[4]?pick(p[4]):''}));
@@ -927,12 +1033,36 @@ new MutationObserver(rerender).observe(document.documentElement,{attributes:true
 let rz;addEventListener('resize',()=>{clearTimeout(rz);rz=setTimeout(hideTip,100)});
 addEventListener('scroll',hideTip,{passive:true});
 
-function loadSample(){const r=rowsFromAoA(makeSample());setOrders(buildOrders(r.rows,'Dados de exemplo',true))}
+const SAMPLE_F=['ANA','MARIA','JULIANA','FERNANDA','CAMILA','BEATRIZ','LARISSA','PATRICIA','ALINE','LETICIA','BRUNA','GABRIELA','CARLA','RENATA','VANESSA','AMANDA','JESSICA','DEBORA'];
+const SAMPLE_M=['JOAO','PEDRO','LUCAS','GABRIEL','RAFAEL','FELIPE','BRUNO','CARLOS','MARCOS','THIAGO','RODRIGO','ANDRE','DIEGO','MATEUS'];
+function loadSample(){for(const n of SAMPLE_F)if(!NAMES.has(n))NAMES.set(n,[1000,1]);for(const n of SAMPLE_M)if(!NAMES.has(n))NAMES.set(n,[1,1000]);
+  const r=rowsFromAoA(makeSample());setOrders(buildOrders(r.rows,'Dados de exemplo',true))}
 
 async function loadData(){
-  const [orders,imports]=await Promise.all([api('/api/orders'),api('/api/imports')]);
-  state.imports=imports;
+  const [orders,imports,names,mun]=await Promise.all([api('/api/orders'),api('/api/imports'),api('/api/names').catch(e=>{if(e instanceof AuthError)throw e;return{}}),
+    fetch('/municipios.json',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).catch(()=>null)]);
+  state.imports=imports;MUN=mun;
+  for(const[k,v]of Object.entries(names||{}))NAMES.set(k,v);
   if(orders.length)setOrders(orders);else loadSample();
+}
+// Consulta no IBGE (pelo servidor) os primeiros nomes que ainda não estão no cache.
+async function resolveNames(){
+  if(state.sample||state.namesPending)return;
+  const missing=[...new Set(state.orders.map(o=>o.fname).filter(n=>n&&!NAMES.has(n)))];
+  if(!missing.length)return;
+  state.namesPending=true;dirty.add('publico');if(active==='publico')renderPerfil();
+  try{
+    for(let i=0;i<missing.length;i+=500){
+      const r=await api('/api/names',{method:'POST',body:{names:missing.slice(i,i+500)}});
+      for(const[k,v]of Object.entries(r.names))NAMES.set(k,v);
+    }
+  }catch(e){if(!(e instanceof AuthError))toast('Não consegui estimar o gênero agora: '+e.message,6000)}
+  finally{
+    // Nomes que o IBGE não conhece ficam no cache como [0,0]; aqui só falta reaplicar.
+    state.namesPending=false;
+    for(const o of state.orders)applyProfile(o);
+    refresh();
+  }
 }
 function showLogin(){$('#app').hidden=true;$('#login').hidden=false;setTimeout(()=>$('#lUser').focus(),0)}
 $('#loginForm').addEventListener('submit',async e=>{
@@ -953,6 +1083,7 @@ async function start(){
   if(F.period==='custom'){F.period='90';$('#fPeriod').value='90'}
   computeScope();Object.keys(RENDER).forEach(k=>dirty.add(k));
   showTab(active);refresh();
+  resolveNames();
 }
 async function boot(){
   try{await api('/api/me')}catch(e){if(!(e instanceof AuthError)){showLogin();$('#loginErr').textContent='Não foi possível falar com o servidor.';$('#loginErr').hidden=false}return}

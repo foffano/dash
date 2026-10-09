@@ -124,8 +124,19 @@
 
       <!-- PÚBLICO -->
       <section class="tab" id="tab-publico" role="tabpanel" hidden>
-        <header class="page-head"><h1>Público</h1><p>Quem compra, de onde e com que frequência. Clientes identificados por ID ou nome do comprador.</p></header>
+        <header class="page-head"><h1>Público</h1><p>Quem compra, de onde e com que frequência. Gênero e tamanho da cidade são estimativas com dados públicos do IBGE.</p></header>
         <div class="kpis" id="custKpis"></div>
+        <div class="grid">
+          <div class="block"><div class="ph"><h3>Gênero</h3><span class="sub">estimado pelo primeiro nome</span></div><div id="genderBox" class="bars"></div><p class="note mt-s" id="genderNote"></p></div>
+          <div class="block"><div class="ph"><h3>Tamanho da cidade</h3><span class="sub">população do município (IBGE 2022)</span></div><div id="citySizeBox" class="bars"></div><p class="note mt-s" id="cityNote"></p></div>
+        </div>
+        <div class="block"><div class="ph"><h3>Perfil por gênero</h3><span class="sub">pedidos válidos no período; recompra com o histórico completo</span></div><div class="tbl-wrap" id="genderTable"></div></div>
+        <div class="grid">
+          <div class="block"><div class="ph"><h3>Produtos que mais atraem mulheres</h3><span class="sub" id="prodAvg"></span></div><div id="prodF" class="bars"></div></div>
+          <div class="block"><div class="ph"><h3>Produtos que mais atraem homens</h3><span class="sub" id="prodAvgM"></span></div><div id="prodM" class="bars"></div></div>
+          <div class="block"><div class="ph"><h3>Horário de compra por gênero</h3><span class="sub">% dos pedidos de cada grupo</span></div><div class="chart"><canvas id="cGenderHour"></canvas></div></div>
+          <div class="block"><div class="ph"><h3>Gênero por tamanho de cidade</h3><span class="sub">entre pedidos com gênero identificado</span></div><div class="chart"><canvas id="cGenderCity"></canvas></div></div>
+        </div>
         <div class="grid">
           <div class="block"><div class="ph"><h3>Mapa de vendas</h3>
             <div class="seg" id="mapMetric"><button data-m="rev" aria-pressed="true">Faturamento</button><button data-m="n">Pedidos</button><button data-m="ticket">Ticket</button><button data-m="idx">Penetração</button></div></div>

@@ -2,6 +2,13 @@
 
 Versões no formato [SemVer](https://semver.org/lang/pt-BR/). Cada versão é uma release no GitHub (`vX.Y.Z`).
 
+## v1.3.0 — 2026-10-09
+
+- Perfil do público na aba Público: gênero estimado pelo primeiro nome (Censo 2010, IBGE) e tamanho da cidade (Censo 2022).
+- Perfil por gênero: pedidos, faturamento, ticket, itens por pedido, recompra e cancelamento; produtos que mais atraem mulheres e homens; horário de compra por gênero; gênero por tamanho de cidade; % de mulheres por estado.
+- Diagnóstico ganha leituras de gênero e de capital × interior.
+- O servidor consulta o IBGE só com o primeiro nome e guarda o resultado (tabela `names`).
+
 ## v1.2.0 — 2026-10-09
 
 - Pedidos que o comprador nunca pagou (cancelados sem hora de pagamento ou por falta de pagamento) agora ficam à parte: não contam como venda nem entram na taxa de cancelamento.

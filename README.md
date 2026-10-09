@@ -96,7 +96,7 @@ Enquanto nada for importado, o painel mostra **dados de exemplo** fictícios.
 | Visão geral | Faturamento, pedidos, ticket, unidades, clientes e taxa de cancelamento, comparados ao período anterior |
 | Diagnóstico | Leituras automáticas: crescimento, dependência de canal, curva ABC, cancelamentos, pedidos não pagos, atrasos, recompra, geografia, horários de pico, efeito salário, tendências |
 | Produtos | Curva ABC, ranking, cancelamento por produto, comprados juntos, em alta e em queda |
-| Público | Mapa por estado, penetração vs. população (IBGE 2022), regiões, cidades, clientes novos e recorrentes, frequência de compra, valor do pedido, melhores clientes |
+| Público | Gênero estimado pelo nome, tamanho da cidade, perfil por gênero (ticket, recompra, cancelamento, horários, produtos), mapa por estado, penetração vs. população (IBGE 2022), regiões, cidades, clientes novos e recorrentes, frequência de compra, valor do pedido, melhores clientes |
 | Quando compram | Mapa de calor dia × hora, dia da semana, hora, dia do mês |
 | Operação | Situação dos pedidos, pedidos não pagos à parte, causas e motivos de cancelamento, tempo até envio, envios no prazo, métodos de envio |
 
@@ -106,6 +106,8 @@ Enquanto nada for importado, o painel mostra **dados de exemplo** fictícios.
 - **Não pago**: pedido que o comprador nunca pagou. Pode estar "Não Pago" ou cancelado sem "Hora do Pagamento" (ex.: "Pagamento atrasado por parte do cliente", "Unpaid Order", ou o comprador desistiu antes de pagar). Não conta como venda nem como cancelamento.
 - **Taxa de cancelamento**: (cancelados depois de pagos + devolvidos) ÷ pedidos pagos. Os cancelamentos pagos são agrupados por causa: comprador desistiu, problema na entrega, vendedor (estoque, endereço), devolução ou outro.
 - **Faturamento**: coluna "Valor do Pedido" (se ausente, "Valor Total de Produtos" ou preço × quantidade).
+- **Gênero**: estimado pelo primeiro nome do comprador, com a contagem de pessoas por nome e sexo do Censo 2010 (API de nomes do IBGE). É feminino ou masculino quando 90% ou mais das pessoas com aquele nome são de um sexo; o resto fica "não identificado", assim como pedidos sem nome (Shopee), com apelido de usuário ou nome mascarado. Só o primeiro nome é enviado ao IBGE, pelo servidor, e o resultado fica guardado na tabela `names` do banco.
+- **Tamanho da cidade**: população do município no Censo 2022 (`public/municipios.json`, gerado por `scripts/gerar-municipios.py`).
 - **Lucro e margem**: não aparecem. A UpSeller não tem o custo dos produtos cadastrado, então qualquer lucro seria inventado.
 - **Cliente**: identificado por "ID do Comprador" (por plataforma) ou, na falta dele, nome + CEP.
 - **Estado**: coluna "Estado" (sigla ou nome) ou, se vazia, deduzido pelo CEP.
@@ -117,6 +119,7 @@ Enquanto nada for importado, o painel mostra **dados de exemplo** fictícios.
 server.js            servidor HTTP, login, API e banco SQLite
 public/              interface (HTML, CSS e JavaScript)
 Dockerfile           imagem do app
+scripts/             gerar-municipios.py (população dos municípios, IBGE)
 deploy/              compose de produção, atualizador e timer do systemd, modelo do app.env
 .github/workflows/   release: gera a imagem no GHCR
 CHANGELOG.md         o que mudou em cada versão
