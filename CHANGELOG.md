@@ -2,6 +2,10 @@
 
 Versões no formato [SemVer](https://semver.org/lang/pt-BR/). Cada versão é uma release no GitHub (`vX.Y.Z`).
 
+## v1.6.1 — 2026-10-09
+
+- Mensagem de erro de leitura orienta a usar o .zip: em app da web do Safari, nem a pasta inteira é lida por completo.
+
 ## v1.6.0 — 2026-10-09
 
 - Importação de notas fiscais aceita a pasta inteira (arrastada ou pelo botão "escolha uma pasta"), inclusive com subpastas, como a exportação da UpSeller (`UpSeller Issue/Outbound Invoice/Sale`).

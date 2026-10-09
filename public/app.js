@@ -942,7 +942,7 @@ function renderDados(){
 }
 // Uma "fonte" é um arquivo ainda não lido: {name, file()}. Numa pasta arrastada, o arquivo só é aberto
 // na hora de ler. Com milhares de arquivos soltos o Safari perde a permissão de leitura no meio do caminho
-// ("The I/O read operation failed"); a pasta inteira ou um .zip não têm esse problema.
+// ("The I/O read operation failed"), principalmente em apps da web do Safari. Um .zip é um arquivo só e sempre funciona.
 const fromFile=f=>({name:f.name,file:()=>Promise.resolve(f)});
 const fromEntry=e=>({name:e.name,file:()=>new Promise((ok,fail)=>e.file(ok,fail))});
 async function walkEntry(entry,out){
@@ -1024,7 +1024,7 @@ async function importFiles(input){
     st.nfCancel?`${fmtN(st.nfCancel)} notas canceladas`:'',
     st.nfSkip?`${fmtN(st.nfSkip)} notas de entrada ou não autorizadas ignoradas`:'',
     st.nfInvalid?`${fmtN(st.nfInvalid)} arquivos que não são NF-e`:''].filter(Boolean).join(' · ');
-  if(st.unreadable.length)errors.unshift(`${fmtN(st.unreadable.length)} arquivos não puderam ser lidos pelo navegador (ex.: ${st.unreadable.slice(0,2).join(', ')}). Arraste a pasta inteira ou um .zip em vez dos arquivos soltos e importe de novo: o que já entrou não duplica`);
+  if(st.unreadable.length)errors.unshift(`${fmtN(st.unreadable.length)} arquivos não puderam ser lidos pelo navegador (ex.: ${st.unreadable.slice(0,2).join(', ')}). Compacte as notas num .zip (botão direito na pasta → Comprimir, ou use o .zip baixado da UpSeller) e arraste o .zip: é um arquivo só e o macOS libera a leitura de uma vez. O que já entrou não duplica`);
   toast(errors.length?`${errors.slice(0,3).join(' · ')}${errors.length>3?` · e mais ${fmtN(errors.length-3)} erros`:''}${msg?' · Importado: '+msg:''}`:`Importado: ${msg||'nada novo'}.`,errors.length?15000:5000);
 }
 function toast(msg,ms=3500){const t=$('#toast');t.textContent=msg;t.hidden=false;clearTimeout(toast._t);toast._t=setTimeout(()=>t.hidden=true,ms)}
