@@ -149,35 +149,54 @@ function parseNFe(text){
 // Leitor de .zip próprio: o da biblioteca de planilhas leva minutos no navegador com dezenas de milhares
 // de arquivos. Este lê o diretório central e entrega um XML por vez, descompactando com a API nativa
 // (DecompressionStream). Pula os metadados que o Finder coloca no .zip (__MACOSX/, ._arquivo).
-async function* zipXmlTexts(file){
-  const buf=new Uint8Array(await file.arrayBuffer()),dv=new DataView(buf.buffer),dec=new TextDecoder('utf-8');
-  let eocd=-1;
-  for(let i=buf.length-22;i>=Math.max(0,buf.length-65557);i--)if(dv.getUint32(i,true)===0x06054b50){eocd=i;break}
-  if(eocd<0)throw new Error('arquivo .zip inválido');
-  let count=dv.getUint16(eocd+10,true),off=dv.getUint32(eocd+16,true);
-  if((count===0xffff||off===0xffffffff)&&eocd>=20&&dv.getUint32(eocd-20,true)===0x07064b50){ // zip64
-    const z=Number(dv.getBigUint64(eocd-12,true));count=Number(dv.getBigUint64(z+32,true));off=Number(dv.getBigUint64(z+48,true));
+// Lê o .zip em pedaços (índice no fim + janelas de 8 MB), nunca o arquivo inteiro de uma vez: no Safari,
+// principalmente em app da web, ler um arquivo grande de uma vez pode falhar com erro de I/O.
+async function readSlice(file,a,b){
+  for(let attempt=0;;attempt++){
+    try{return new Uint8Array(await file.slice(a,b).arrayBuffer())}
+    catch(e){if(attempt>=2)throw e;await new Promise(r=>setTimeout(r,300*(attempt+1)))}
   }
-  let found=0;
-  for(let k=0,p=off;k<count;k++){
+}
+async function* zipXmlTexts(file){
+  const dec=new TextDecoder('utf-8'),size=file.size;
+  const tailStart=Math.max(0,size-65557-20),tail=await readSlice(file,tailStart,size),tdv=new DataView(tail.buffer);
+  let e=-1;
+  for(let i=tail.length-22;i>=0;i--)if(tdv.getUint32(i,true)===0x06054b50){e=i;break}
+  if(e<0)throw new Error('arquivo .zip inválido');
+  let count=tdv.getUint16(e+10,true),cdSize=tdv.getUint32(e+12,true),cdOff=tdv.getUint32(e+16,true);
+  if((count===0xffff||cdOff===0xffffffff||cdSize===0xffffffff)&&e>=20&&tdv.getUint32(e-20,true)===0x07064b50){ // zip64
+    const z=Number(tdv.getBigUint64(e-12,true)),zb=await readSlice(file,z,z+56),zdv=new DataView(zb.buffer);
+    count=Number(zdv.getBigUint64(32,true));cdSize=Number(zdv.getBigUint64(40,true));cdOff=Number(zdv.getBigUint64(48,true));
+  }
+  const cd=await readSlice(file,cdOff,cdOff+cdSize),dv=new DataView(cd.buffer),entries=[];
+  for(let k=0,p=0;k<count;k++){
     if(dv.getUint32(p,true)!==0x02014b50)throw new Error('arquivo .zip inválido');
     const method=dv.getUint16(p+10,true),nlen=dv.getUint16(p+28,true),xlen=dv.getUint16(p+30,true),clen=dv.getUint16(p+32,true);
     let csize=dv.getUint32(p+20,true),usize=dv.getUint32(p+24,true),lho=dv.getUint32(p+42,true);
-    const name=dec.decode(buf.subarray(p+46,p+46+nlen));
+    const name=dec.decode(cd.subarray(p+46,p+46+nlen));
     if(csize===0xffffffff||usize===0xffffffff||lho===0xffffffff){ // tamanhos e posição no campo extra zip64
       for(let x=p+46+nlen,end=x+xlen;x+4<=end;){const id=dv.getUint16(x,true),sz=dv.getUint16(x+2,true);
         if(id===1){let y=x+4;if(usize===0xffffffff){usize=Number(dv.getBigUint64(y,true));y+=8}if(csize===0xffffffff){csize=Number(dv.getBigUint64(y,true));y+=8}if(lho===0xffffffff)lho=Number(dv.getBigUint64(y,true));break}
         x+=4+sz}
     }
     p+=46+nlen+xlen+clen;
-    if(!/\.xml$/i.test(name)||/(^|\/)(__MACOSX\/|\._)/.test(name))continue;
-    const start=lho+30+dv.getUint16(lho+26,true)+dv.getUint16(lho+28,true),data=buf.subarray(start,start+csize);
-    found++;
-    if(method===0)yield dec.decode(data);
-    else if(method===8)yield await new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).text();
-    else throw new Error(`o .zip usa um tipo de compactação não suportado (${method})`);
+    if(/\.xml$/i.test(name)&&!/(^|\/)(__MACOSX\/|\._)/.test(name))entries.push({method,csize,lho});
   }
-  if(!found)throw new Error('o .zip não tem arquivos .xml');
+  if(!entries.length)throw new Error('o .zip não tem arquivos .xml');
+  entries.sort((x,y)=>x.lho-y.lho);
+  const WIN=8*1024*1024;let win=null,winStart=0;
+  const bytes=async(a,b)=>{ // garante que [a,b) está na janela carregada
+    if(!win||a<winStart||b>winStart+win.length){winStart=a;win=await readSlice(file,a,Math.min(size,Math.max(b,a+WIN)))}
+    return win.subarray(a-winStart,b-winStart);
+  };
+  for(const en of entries){
+    const h=await bytes(en.lho,en.lho+30),hdv=new DataView(h.buffer,h.byteOffset,30);
+    if(hdv.getUint32(0,true)!==0x04034b50)throw new Error('arquivo .zip inválido');
+    const start=en.lho+30+hdv.getUint16(26,true)+hdv.getUint16(28,true),data=await bytes(start,start+en.csize);
+    if(en.method===0)yield dec.decode(data);
+    else if(en.method===8)yield await new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).text();
+    else throw new Error(`o .zip usa um tipo de compactação não suportado (${en.method})`);
+  }
 }
 async function* invoiceTexts(file){
   if(/\.zip$/i.test(file.name))yield* zipXmlTexts(file);

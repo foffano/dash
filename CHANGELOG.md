@@ -2,6 +2,10 @@
 
 Versões no formato [SemVer](https://semver.org/lang/pt-BR/). Cada versão é uma release no GitHub (`vX.Y.Z`).
 
+## v1.6.3 — 2026-10-09
+
+- O .zip de notas é lido em pedaços de até 8 MB (índice no fim do arquivo e depois janelas), com nova tentativa em cada pedaço, em vez de carregar o arquivo inteiro de uma vez: no app da web do Safari, ler um .zip de 80 MB de uma vez falhava com erro de I/O.
+
 ## v1.6.2 — 2026-10-09
 
 - Leitor de .zip próprio, com descompactação nativa do navegador: um .zip de 80 MB com 15 mil notas é importado em segundos (antes travava a página por minutos e o Safari interrompia o envio).
