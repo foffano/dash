@@ -2,6 +2,13 @@
 
 Versões no formato [SemVer](https://semver.org/lang/pt-BR/). Cada versão é uma release no GitHub (`vX.Y.Z`).
 
+## v1.4.0 — 2026-10-09
+
+- Painel abre mais rápido: uma única chamada (`/api/bootstrap`) traz pedidos, importações e nomes, em vez de quatro, e sem a checagem de login antes.
+- Carga compacta: só os campos usados nos gráficos, com textos repetidos em dicionário (16 MB → ~3 MB antes da compressão).
+- A carga fica pronta e comprimida na memória do servidor e só é refeita quando os dados mudam; sem mudança, o navegador recebe 304 e reaproveita a cópia que tem.
+- JavaScript, CSS e bibliotecas com a versão no endereço, guardados no navegador até a próxima versão; a biblioteca de planilhas só carrega ao importar.
+
 ## v1.3.0 — 2026-10-09
 
 - Perfil do público na aba Público: gênero estimado pelo primeiro nome (Censo 2010, IBGE) e tamanho da cidade (Censo 2022).

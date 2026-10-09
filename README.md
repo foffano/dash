@@ -113,10 +113,22 @@ Enquanto nada for importado, o painel mostra **dados de exemplo** fictícios.
 - **Estado**: coluna "Estado" (sigla ou nome) ou, se vazia, deduzido pelo CEP.
 - **KIT SKU**: as várias linhas de um kit são reunidas em um único item do pedido.
 
+## Banco de dados e carregamento
+
+O banco é um arquivo SQLite (`/srv/apps/dash/data/raiox.db`) com três tabelas:
+
+| Tabela | Conteúdo |
+|---|---|
+| `orders` | Um registro por pedido: `key` (nº do pedido), `t` (data, indexada), `data` (o pedido completo em JSON, com itens) e `updated_at`. Importar de novo o mesmo pedido atualiza o registro. |
+| `imports` | Histórico de importações (arquivo, data, linhas, novos, atualizados, período). |
+| `names` | Cache do IBGE: primeiro nome → quantas mulheres e homens têm esse nome. Cada nome é consultado uma vez só. |
+
+Ao abrir o painel, o navegador faz uma única chamada, `/api/bootstrap`, que traz pedidos, importações e nomes. O servidor monta essa resposta só com os campos usados nos gráficos, em formato compacto (texto repetido vira referência a um dicionário), e a guarda pronta e comprimida na memória. Ela é refeita só quando os dados mudam (importação, apagar dados, nomes novos do IBGE). Se nada mudou desde o último acesso, o servidor responde 304 e o navegador usa a cópia que já tem. JavaScript, CSS e gráficos têm a versão no endereço (`app.js?v=v1.4.0`) e ficam guardados no navegador até a próxima versão. A biblioteca de planilhas só é baixada na hora de importar.
+
 ## Estrutura
 
 ```
-server.js            servidor HTTP, login, API e banco SQLite
+server.js            servidor HTTP, login, API, banco SQLite e carga compacta do painel
 public/              interface (HTML, CSS e JavaScript)
 Dockerfile           imagem do app
 scripts/             gerar-municipios.py (população dos municípios, IBGE)

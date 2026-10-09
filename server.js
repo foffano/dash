@@ -180,7 +180,10 @@ const VENDOR = {
   '/vendor/xlsx.full.min.js': path.join(__dirname, 'node_modules', 'xlsx', 'dist', 'xlsx.full.min.js'),
 };
 const staticCache = new Map();
-function serveStatic(req, res, pathname) {
+// index.html chama app.js, style.css etc. com ?v=<versão>: o navegador guarda esses arquivos
+// por um ano e só baixa de novo quando sai uma versão nova.
+const PROD = process.env.NODE_ENV === 'production';
+function serveStatic(req, res, pathname, search) {
   let file = VENDOR[pathname];
   if (!file) {
     const rel = pathname === '/' ? 'index.html' : decodeURIComponent(pathname).replace(/^\/+/, '');
@@ -190,11 +193,12 @@ function serveStatic(req, res, pathname) {
   let entry = staticCache.get(file);
   if (!entry) {
     try { if (!fs.statSync(file).isFile()) throw 0; } catch { return send(req, res, 404, 'Não encontrado', 'text/plain; charset=utf-8'); }
-    const body = fs.readFileSync(file);
+    let body = fs.readFileSync(file);
+    if (file.endsWith('.html')) body = Buffer.from(body.toString('utf8').replaceAll('__V__', encodeURIComponent(VERSION)));
     entry = { body, gz: zlib.gzipSync(body), type: TYPES[path.extname(file)] || 'application/octet-stream', etag: '"' + crypto.createHash('sha1').update(body).digest('hex').slice(0, 16) + '"' };
-    if (process.env.NODE_ENV === 'production') staticCache.set(file, entry);
+    if (PROD) staticCache.set(file, entry);
   }
-  const headers = { ...SEC_HEADERS, 'Content-Type': entry.type, ETag: entry.etag, 'Cache-Control': VENDOR[pathname] ? 'public, max-age=604800' : 'no-cache', Vary: 'Accept-Encoding' };
+  const headers = { ...SEC_HEADERS, 'Content-Type': entry.type, ETag: entry.etag, 'Cache-Control': PROD && /(^|&)v=/.test(search) ? 'public, max-age=31536000, immutable' : VENDOR[pathname] ? 'public, max-age=604800' : 'no-cache', Vary: 'Accept-Encoding' };
   if (req.headers['if-none-match'] === entry.etag) { res.writeHead(304, headers); return res.end(); }
   if (acceptsGzip(req)) { res.writeHead(200, { ...headers, 'Content-Encoding': 'gzip', 'Content-Length': entry.gz.length }); return res.end(req.method === 'HEAD' ? undefined : entry.gz); }
   res.writeHead(200, { ...headers, 'Content-Length': entry.body.length });
@@ -239,6 +243,62 @@ async function resolveNames(list) {
 }
 const namesMap = () => Object.fromEntries(q.allNames.all().map(r => [r.name, [r.f, r.m]]));
 
+/* ---------------- carga inicial do painel ---------------- */
+// O banco guarda cada pedido completo (JSON em orders.data), e é isso que vai no backup.
+// Para abrir o painel, o navegador recebe só os campos que ele usa, em formato compacto:
+// cada pedido vira uma lista de valores e textos repetidos (plataforma, situação, cidade,
+// produto...) entram uma vez num dicionário. A resposta fica pronta e comprimida na memória
+// e só é refeita quando os dados mudam; se nada mudou, o navegador recebe 304 (ETag).
+const ORDER_FIELDS = ['key', 'platform', 'store', 'status', 'afterSale', 'canceledBy', 'cancelReason', 't', 'payT', 'shipT', 'deadline', 'orderValue', 'productsTotal', 'buyerId', 'buyerName', 'city', 'uf', 'cep', 'shipMethod'];
+const ITEM_FIELDS = ['name', 'sku', 'variation', 'price', 'qty'];
+const DICT_FIELDS = new Set(['platform', 'store', 'status', 'afterSale', 'canceledBy', 'cancelReason', 'city', 'uf', 'shipMethod', 'name', 'sku', 'variation']);
+function packOrders() {
+  const dict = [], index = new Map();
+  const enc = (f, v) => {
+    if (v === undefined || v === null || v === '') return null;
+    if (!DICT_FIELDS.has(f)) return v;
+    let i = index.get(v);
+    if (i === undefined) { i = dict.length; dict.push(v); index.set(v, i); }
+    return i;
+  };
+  const orders = [];
+  for (const r of q.allOrders.iterate()) {
+    const o = JSON.parse(r.data);
+    if (!o.buyerName && o.recipient) o.buyerName = o.recipient;
+    const row = ORDER_FIELDS.map(f => enc(f, o[f]));
+    row.push((o.items || []).map(it => ITEM_FIELDS.map(f => enc(f, it[f]))));
+    orders.push(row);
+  }
+  return { orderFields: ORDER_FIELDS, itemFields: ITEM_FIELDS, dictFields: [...DICT_FIELDS], dict, orders };
+}
+let boot = null, bootTimer = null;
+function bootData() {
+  if (!boot) {
+    const t = Date.now();
+    const raw = Buffer.from(JSON.stringify({ orders: packOrders(), imports: q.allImports.all(), names: namesMap() }));
+    boot = { raw, gz: zlib.gzipSync(raw), etag: '"' + crypto.createHash('sha1').update(raw).digest('base64url').slice(0, 22) + '"' };
+    console.log(`Carga do painel montada: ${(raw.length / 1e6).toFixed(1)} MB, ${(boot.gz.length / 1e6).toFixed(2)} MB comprimida, ${Date.now() - t} ms`);
+  }
+  return boot;
+}
+// Dados mudaram: descarta a carga pronta e remonta logo depois (uma importação manda vários lotes seguidos).
+function invalidateBoot() {
+  boot = null;
+  clearTimeout(bootTimer);
+  bootTimer = setTimeout(() => { try { bootData(); } catch (e) { console.error(e); } }, 3000);
+  bootTimer.unref();
+}
+function sendBoot(req, res) {
+  const b = bootData();
+  const headers = { ...SEC_HEADERS, 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'private, no-cache', ETag: b.etag, Vary: 'Accept-Encoding' };
+  // O Cloudflare pode transformar o ETag em fraco (W/"...") ao recomprimir.
+  const tags = (req.headers['if-none-match'] || '').split(',').map(x => x.trim().replace(/^W\//, ''));
+  if (tags.includes(b.etag)) { res.writeHead(304, headers); return res.end(); }
+  if (acceptsGzip(req)) { res.writeHead(200, { ...headers, 'Content-Encoding': 'gzip', 'Content-Length': b.gz.length }); return res.end(b.gz); }
+  res.writeHead(200, { ...headers, 'Content-Length': b.raw.length });
+  res.end(b.raw);
+}
+
 /* ---------------- API ---------------- */
 const clean = (v, max = 300) => String(v ?? '').slice(0, max);
 async function api(req, res, pathname) {
@@ -260,7 +320,7 @@ async function api(req, res, pathname) {
   if (!session) return json(req, res, 401, { error: 'Faça login.' });
 
   if (pathname === '/api/me' && m === 'GET') return json(req, res, 200, { user: session.u, orders: q.countOrders.get().n });
-  if (pathname === '/api/orders' && m === 'GET') return streamOrders(req, res);
+  if (pathname === '/api/bootstrap' && m === 'GET') return sendBoot(req, res);
   if (pathname === '/api/backup' && m === 'GET') return streamOrders(req, res, { wrap: true });
 
   if (pathname === '/api/orders' && m === 'POST') {
@@ -280,23 +340,25 @@ async function api(req, res, pathname) {
       }
       db.exec('COMMIT');
     } catch (e) { db.exec('ROLLBACK'); throw e; }
+    invalidateBoot();
     return json(req, res, 200, { created, updated });
   }
-  if (pathname === '/api/names' && m === 'GET') return json(req, res, 200, namesMap());
   if (pathname === '/api/names' && m === 'POST') {
     const b = await readJson(req);
     const added = await resolveNames(Array.isArray(b.names) ? b.names : []);
+    if (added) invalidateBoot();
     return json(req, res, 200, { added, names: namesMap() });
   }
-  if (pathname === '/api/imports' && m === 'GET') return json(req, res, 200, q.allImports.all());
   if (pathname === '/api/imports' && m === 'POST') {
     const b = await readJson(req);
     const n = v => (Number.isFinite(+v) && v !== null && v !== '' ? Math.round(+v) : null);
     q.addImport.run(clean(b.file), Date.now(), n(b.rows) ?? 0, n(b.created) ?? 0, n(b.updated) ?? 0, n(b.minT), n(b.maxT));
+    invalidateBoot();
     return json(req, res, 200, { ok: true });
   }
   if (pathname === '/api/data' && m === 'DELETE') {
     db.exec('DELETE FROM orders; DELETE FROM imports;'); // o cache de nomes não tem dados de clientes e fica
+    invalidateBoot();
     return json(req, res, 200, { ok: true });
   }
   return json(req, res, 404, { error: 'Rota não encontrada.' });
@@ -304,13 +366,13 @@ async function api(req, res, pathname) {
 
 /* ---------------- servidor ---------------- */
 const server = http.createServer(async (req, res) => {
-  const { pathname } = new URL(req.url, 'http://x');
+  const { pathname, search } = new URL(req.url, 'http://x');
   try {
     if (pathname === '/healthz') return send(req, res, 200, 'ok', 'text/plain; charset=utf-8');
     if (pathname === '/api/health') { db.prepare('SELECT 1').get(); return json(req, res, 200, { ok: true, version: VERSION }); }
     if (pathname.startsWith('/api/')) return await api(req, res, pathname);
     if (req.method !== 'GET' && req.method !== 'HEAD') return send(req, res, 405, 'Método não permitido', 'text/plain; charset=utf-8');
-    return serveStatic(req, res, pathname);
+    return serveStatic(req, res, pathname, search.slice(1));
   } catch (e) {
     if (!e.status) console.error(e);
     if (!res.headersSent) json(req, res, e.status || 500, { error: e.status ? e.message : 'Erro interno do servidor.' });
@@ -318,7 +380,10 @@ const server = http.createServer(async (req, res) => {
   }
 });
 server.requestTimeout = 5 * 60e3;
-server.listen(PORT, HOST, () => console.log(`Raio-X de Vendas ${VERSION} em http://${HOST}:${PORT} (dados em ${DATA_DIR})`));
+server.listen(PORT, HOST, () => {
+  console.log(`Raio-X de Vendas ${VERSION} em http://${HOST}:${PORT} (dados em ${DATA_DIR})`);
+  setImmediate(() => { try { bootData(); } catch (e) { console.error(e); } }); // deixa a carga pronta antes do primeiro login
+});
 const shutdown = () => server.close(() => { db.close(); process.exit(0); });
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);

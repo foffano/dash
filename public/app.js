@@ -113,7 +113,16 @@ function rowsFromAoA(aoa){
   }
   return {rows,fields:Object.keys(seen)};
 }
+// A biblioteca de planilhas é grande e só serve para importar: carrega na primeira importação.
+let xlsxLoading=null;
+function loadXlsx(){
+  if(window.XLSX)return Promise.resolve();
+  const v=document.querySelector('script[src^="app.js"]')?.src.split('?')[1]||'';
+  return xlsxLoading??=new Promise((ok,fail)=>{const s=document.createElement('script');s.src='vendor/xlsx.full.min.js'+(v?'?'+v:'');
+    s.onload=ok;s.onerror=()=>{xlsxLoading=null;fail(new Error('A biblioteca de planilhas não carregou. Verifique a conexão.'))};document.head.appendChild(s)});
+}
 async function readSheetFile(file){
+  await loadXlsx();
   const buf=await file.arrayBuffer();
   let wb;
   if(/\.(csv|txt)$/i.test(file.name)){
@@ -871,7 +880,6 @@ function renderDados(){
   $('#importLog').innerHTML=log.length?`<table><thead><tr><th>Arquivo</th><th>Data</th><th class="n">Linhas</th><th class="n">Novos</th><th class="n">Atualizados</th><th>Pedidos de</th></tr></thead><tbody>${log.map(l=>`<tr><td class="wrap-cell">${esc(l.file)}</td><td>${new Date(l.at).toLocaleString('pt-BR',{dateStyle:'short',timeStyle:'short'})}</td><td class="n">${fmtN(l.rows)}</td><td class="n">${fmtN(l.created)}</td><td class="n">${fmtN(l.updated)}</td><td>${fmtDate(l.minT)} a ${fmtDate(l.maxT)}</td></tr>`).join('')}</tbody></table>`:'<div class="empty">Nenhuma planilha importada ainda.</div>';
 }
 async function importFiles(files){
-  if(!window.XLSX){toast('A biblioteca de planilhas não carregou. Recarregue a página.');return}
   let created=0,updated=0;const errors=[];
   showTab('dados');toast('Importando…',60000);
   for(const f of files){
@@ -1038,11 +1046,27 @@ const SAMPLE_M=['JOAO','PEDRO','LUCAS','GABRIEL','RAFAEL','FELIPE','BRUNO','CARL
 function loadSample(){for(const n of SAMPLE_F)if(!NAMES.has(n))NAMES.set(n,[1000,1]);for(const n of SAMPLE_M)if(!NAMES.has(n))NAMES.set(n,[1,1000]);
   const r=rowsFromAoA(makeSample());setOrders(buildOrders(r.rows,'Dados de exemplo',true))}
 
+// Pedidos no formato compacto do servidor (ver packOrders em server.js) de volta para objetos.
+const NUM_FIELDS=new Set(['t','payT','shipT','deadline','orderValue','productsTotal','price','qty']);
+function unpackOrders(p){
+  const D=p.dict,dict=new Set(p.dictFields);
+  const dec=(f,v)=>v==null?(NUM_FIELDS.has(f)?null:''):dict.has(f)?D[v]:v;
+  const of=p.orderFields,itf=p.itemFields;
+  return p.orders.map(row=>{
+    const o={sample:false,recipient:''};
+    for(let i=0;i<of.length;i++)o[of[i]]=dec(of[i],row[i]);
+    o.items=row[of.length].map(r=>{const it={};for(let i=0;i<itf.length;i++)it[itf[i]]=dec(itf[i],r[i]);if(!it.name)it.name='Sem nome';if(it.price==null)it.price=0;if(it.qty==null)it.qty=1;return it});
+    return o;
+  });
+}
+let munLoading=null;
+const loadMun=()=>munLoading??=fetch('municipios.json?'+(document.querySelector('script[src^="app.js"]')?.src.split('?')[1]||''),{credentials:'same-origin'})
+  .then(r=>r.ok?r.json():null).catch(()=>{munLoading=null;return null});
 async function loadData(){
-  const [orders,imports,names,mun]=await Promise.all([api('/api/orders'),api('/api/imports'),api('/api/names').catch(e=>{if(e instanceof AuthError)throw e;return{}}),
-    fetch('/municipios.json',{credentials:'same-origin'}).then(r=>r.ok?r.json():null).catch(()=>null)]);
-  state.imports=imports;MUN=mun;
-  for(const[k,v]of Object.entries(names||{}))NAMES.set(k,v);
+  const [b,mun]=await Promise.all([api('/api/bootstrap'),loadMun()]);
+  state.imports=b.imports;MUN=mun;
+  for(const[k,v]of Object.entries(b.names||{}))NAMES.set(k,v);
+  const orders=unpackOrders(b.orders);
   if(orders.length)setOrders(orders);else loadSample();
 }
 // Consulta no IBGE (pelo servidor) os primeiros nomes que ainda não estão no cache.
@@ -1074,8 +1098,7 @@ $('#loginForm').addEventListener('submit',async e=>{
 async function start(){
   $('#login').hidden=true;$('#app').hidden=false;
   applyTheme();
-  if(!window.Chart||!window.XLSX)$('#dataInfo').textContent='As bibliotecas do painel não carregaram. Recarregue a página.';
-  $('#dataInfo').textContent='Carregando dados…';
+  $('#dataInfo').textContent=window.Chart?'Carregando dados…':'Os gráficos não carregaram. Recarregue a página.';
   await loadData();
   const h=(location.hash||'').slice(1);
   active=RENDER[h]?h:'geral';
@@ -1086,7 +1109,7 @@ async function start(){
   resolveNames();
 }
 async function boot(){
-  try{await api('/api/me')}catch(e){if(!(e instanceof AuthError)){showLogin();$('#loginErr').textContent='Não foi possível falar com o servidor.';$('#loginErr').hidden=false}return}
-  try{await start()}catch(e){if(!(e instanceof AuthError))toast(e.message,8000)}
+  try{await start()}
+  catch(e){if(e instanceof AuthError)return;showLogin();$('#loginErr').textContent='Não foi possível falar com o servidor.';$('#loginErr').hidden=false}
 }
 boot();
