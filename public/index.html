@@ -136,6 +136,8 @@
           <div class="block"><div class="ph"><h3>Produtos que mais atraem homens</h3><span class="sub" id="prodAvgM"></span></div><div id="prodM" class="bars"></div></div>
           <div class="block"><div class="ph"><h3>Horário de compra por gênero</h3><span class="sub">% dos pedidos de cada grupo</span></div><div class="chart"><canvas id="cGenderHour"></canvas></div></div>
           <div class="block"><div class="ph"><h3>Gênero por tamanho de cidade</h3><span class="sub">entre pedidos com gênero identificado</span></div><div class="chart"><canvas id="cGenderCity"></canvas></div></div>
+          <div class="block"><div class="ph"><h3>Origem do CPF</h3><span class="sub">região fiscal de emissão, pela nota fiscal</span></div><div id="cpfRegion" class="bars"></div><p class="note mt-s" id="cpfNote"></p></div>
+          <div class="block"><div class="ph"><h3>Mesmo cliente em várias plataformas</h3><span class="sub">pelo CPF/CNPJ da nota fiscal</span></div><div id="multiPlat" class="bars"></div></div>
         </div>
         <div class="grid">
           <div class="block"><div class="ph"><h3>Mapa de vendas</h3>
@@ -154,7 +156,8 @@
           <div class="block"><div class="ph"><h3>Valor do pedido</h3><span class="sub">quanto se gasta por compra</span></div><div class="chart"><canvas id="cTicketHist"></canvas></div></div>
           <div class="block"><div class="ph"><h3>Itens por pedido</h3><span class="sub">unidades na mesma compra</span></div><div class="chart"><canvas id="cBasket"></canvas></div></div>
         </div>
-        <div class="block"><div class="ph"><h3>Melhores clientes</h3><span class="sub">no período, com histórico completo</span></div><div class="tbl-wrap" id="custTable"></div></div>
+        <div class="block"><div class="ph"><h3>Melhores clientes</h3><span class="sub">no período, com histórico completo</span>
+          <div class="filters"><label class="prop search"><input type="search" id="custSearch" placeholder="Buscar nome ou CPF" aria-label="Buscar cliente"></label></div></div><div class="tbl-wrap" id="custTable"></div></div>
       </section>
 
       <!-- COMPORTAMENTO -->
@@ -188,9 +191,9 @@
         <header class="page-head"><h1>Importar dados</h1><p>As planilhas são lidas no navegador e só os campos usados no painel são enviados ao servidor.</p></header>
         <label class="drop" id="drop">
           <svg width="22" height="22" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10V2.5m-3 3 3-3 3 3M2.5 10v3.5h11V10"/></svg>
-          <span><b>Arraste as planilhas da UpSeller</b> ou <span class="link-btn">escolha os arquivos</span></span>
-          <span class="muted">.xlsx, .xls, .csv ou backup .json. Pedidos repetidos são atualizados, não duplicados.</span>
-          <input type="file" id="fileInput" multiple accept=".xlsx,.xls,.csv,.txt,.json" hidden>
+          <span><b>Arraste as planilhas da UpSeller ou os XMLs das notas fiscais</b> ou <span class="link-btn">escolha os arquivos</span></span>
+          <span class="muted">.xlsx, .xls, .csv, NF-e .xml (ou .zip com XMLs) ou backup .json. Pedidos e notas repetidos são atualizados, não duplicados.</span>
+          <input type="file" id="fileInput" multiple accept=".xlsx,.xls,.csv,.txt,.json,.xml,.zip" hidden>
         </label>
         <div class="grid">
           <div class="block"><div class="ph"><h3>Base atual</h3></div><dl class="kv-list" id="baseStats"></dl>
@@ -219,7 +222,8 @@
             <li><b>Cidade</b>, <b>Estado</b>, <b>CEP</b>, <b>Bairro</b></li>
             <li><b>Método de Envio</b></li>
           </ul>
-          <p class="note mt-s">Telefone, endereço completo, CPF/CNPJ e dados de nota fiscal são ignorados e nunca saem do seu computador.</p>
+          <p class="note mt-s"><b>Notas fiscais (XML da NF-e):</b> ligam-se ao pedido pelo "Nº de Pedido" da UpSeller. Delas o painel guarda nome, CPF/CNPJ, cidade, estado, CEP, valor e chave da nota, para identificar o cliente em todas as plataformas e completar nome e cidade dos pedidos da Shopee.</p>
+          <p class="note mt-s">Telefone e endereço (rua, número, bairro) são ignorados e nunca saem do seu computador.</p>
         </div>
       </section>
     </main>

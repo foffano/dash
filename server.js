@@ -55,6 +55,20 @@ db.exec(`
     m INTEGER NOT NULL,
     fetched_at INTEGER NOT NULL
   );
+  -- Notas fiscais (NF-e) de venda: só o que o painel usa; rua e número não são guardados.
+  CREATE TABLE IF NOT EXISTS invoices (
+    chave TEXT PRIMARY KEY,
+    order_no TEXT,
+    emitted_at INTEGER,
+    doc TEXT,
+    name TEXT,
+    city TEXT,
+    uf TEXT,
+    cep TEXT,
+    value REAL,
+    imported_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS invoices_order ON invoices(order_no);
   CREATE TABLE IF NOT EXISTS imports (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     file TEXT, at INTEGER, rows INTEGER, created INTEGER, updated INTEGER, min_t INTEGER, max_t INTEGER
@@ -69,6 +83,11 @@ const q = {
   allNames: db.prepare('SELECT name, f, m FROM names'),
   getName: db.prepare('SELECT 1 FROM names WHERE name = ?'),
   putName: db.prepare('INSERT OR REPLACE INTO names (name, f, m, fetched_at) VALUES (?, ?, ?, ?)'),
+  upsertInvoice: db.prepare(`INSERT INTO invoices (chave, order_no, emitted_at, doc, name, city, uf, cep, value, imported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(chave) DO UPDATE SET order_no = excluded.order_no, emitted_at = excluded.emitted_at, doc = excluded.doc, name = excluded.name,
+    city = excluded.city, uf = excluded.uf, cep = excluded.cep, value = excluded.value, imported_at = excluded.imported_at`),
+  invoiceExists: db.prepare('SELECT 1 FROM invoices WHERE chave = ?'),
+  allInvoices: db.prepare('SELECT chave, order_no AS orderNo, emitted_at AS emittedAt, doc, name, city, uf, cep, value FROM invoices ORDER BY emitted_at'),
   allImports: db.prepare('SELECT id, file, at, rows, created, updated, min_t AS minT, max_t AS maxT FROM imports ORDER BY at DESC'),
 };
 
@@ -160,17 +179,20 @@ function clientIp(req) {
   const xff = (req.headers['x-forwarded-for'] || '').split(',').map(s => s.trim()).filter(Boolean);
   return xff.at(-1) || req.socket.remoteAddress;
 }
-// Lista de pedidos em streaming, para não montar uma string gigante na memória.
-function streamOrders(req, res, { wrap = false } = {}) {
-  const headers = { ...SEC_HEADERS, 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' };
-  if (wrap) headers['Content-Disposition'] = `attachment; filename="raiox-vendas-backup-${new Date().toISOString().slice(0, 10)}.json"`;
+// Backup completo (pedidos e notas) em streaming, para não montar uma string gigante na memória.
+function streamBackup(req, res) {
+  const headers = { ...SEC_HEADERS, 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store',
+    'Content-Disposition': `attachment; filename="raiox-vendas-backup-${new Date().toISOString().slice(0, 10)}.json"` };
   let out = res;
   if (acceptsGzip(req)) { headers['Content-Encoding'] = 'gzip'; headers.Vary = 'Accept-Encoding'; out = zlib.createGzip(); out.pipe(res); }
   res.writeHead(200, headers);
-  out.write(wrap ? `{"app":"raiox-vendas","version":1,"exportedAt":"${new Date().toISOString()}","orders":[` : '[');
+  out.write(`{"app":"raiox-vendas","version":2,"exportedAt":"${new Date().toISOString()}","orders":[`);
   let first = true;
   for (const row of q.allOrders.iterate()) { out.write((first ? '' : ',') + row.data); first = false; }
-  out.end(wrap ? ']}' : ']');
+  out.write('],"invoices":[');
+  first = true;
+  for (const n of q.allInvoices.iterate()) { out.write((first ? '' : ',') + JSON.stringify(n)); first = false; }
+  out.end(']}');
 }
 
 /* ---------------- arquivos estáticos ---------------- */
@@ -249,10 +271,15 @@ const namesMap = () => Object.fromEntries(q.allNames.all().map(r => [r.name, [r.
 // cada pedido vira uma lista de valores e textos repetidos (plataforma, situação, cidade,
 // produto...) entram uma vez num dicionário. A resposta fica pronta e comprimida na memória
 // e só é refeita quando os dados mudam; se nada mudou, o navegador recebe 304 (ETag).
-const ORDER_FIELDS = ['key', 'platform', 'store', 'status', 'afterSale', 'canceledBy', 'cancelReason', 't', 'payT', 'shipT', 'deadline', 'orderValue', 'productsTotal', 'buyerId', 'buyerName', 'city', 'uf', 'cep', 'shipMethod'];
+const ORDER_FIELDS = ['key', 'platform', 'store', 'status', 'afterSale', 'canceledBy', 'cancelReason', 't', 'payT', 'shipT', 'deadline', 'orderValue', 'productsTotal', 'buyerId', 'buyerName', 'city', 'uf', 'cep', 'shipMethod', 'doc', 'nfName'];
 const ITEM_FIELDS = ['name', 'sku', 'variation', 'price', 'qty'];
 const DICT_FIELDS = new Set(['platform', 'store', 'status', 'afterSale', 'canceledBy', 'cancelReason', 'city', 'uf', 'shipMethod', 'name', 'sku', 'variation']);
 function packOrders() {
+  // Nota fiscal de cada pedido, pelo "Nº de Pedido" da UpSeller (campo xPed da NF-e). Vale a mais recente.
+  const inv = new Map();
+  let total = 0;
+  for (const n of q.allInvoices.iterate()) { total++; if (n.orderNo) inv.set(n.orderNo, n); }
+  let linked = 0;
   const dict = [], index = new Map();
   const enc = (f, v) => {
     if (v === undefined || v === null || v === '') return null;
@@ -265,11 +292,19 @@ function packOrders() {
   for (const r of q.allOrders.iterate()) {
     const o = JSON.parse(r.data);
     if (!o.buyerName && o.recipient) o.buyerName = o.recipient;
+    const n = o.orderNo && inv.get(o.orderNo);
+    if (n) {
+      linked++;
+      o.doc = n.doc; o.nfName = n.name;
+      if (!o.city && n.city) { o.city = n.city; o.uf = n.uf; }
+      if (!o.uf && n.uf) o.uf = n.uf;
+      if (!o.cep && n.cep) o.cep = n.cep;
+    }
     const row = ORDER_FIELDS.map(f => enc(f, o[f]));
     row.push((o.items || []).map(it => ITEM_FIELDS.map(f => enc(f, it[f]))));
     orders.push(row);
   }
-  return { orderFields: ORDER_FIELDS, itemFields: ITEM_FIELDS, dictFields: [...DICT_FIELDS], dict, orders };
+  return { orderFields: ORDER_FIELDS, itemFields: ITEM_FIELDS, dictFields: [...DICT_FIELDS], dict, orders, invoices: { total, linked } };
 }
 let boot = null, bootTimer = null;
 function bootData() {
@@ -321,7 +356,7 @@ async function api(req, res, pathname) {
 
   if (pathname === '/api/me' && m === 'GET') return json(req, res, 200, { user: session.u, orders: q.countOrders.get().n });
   if (pathname === '/api/bootstrap' && m === 'GET') return sendBoot(req, res);
-  if (pathname === '/api/backup' && m === 'GET') return streamOrders(req, res, { wrap: true });
+  if (pathname === '/api/backup' && m === 'GET') return streamBackup(req, res);
 
   if (pathname === '/api/orders' && m === 'POST') {
     const body = await readJson(req);
@@ -349,6 +384,27 @@ async function api(req, res, pathname) {
     if (added) invalidateBoot();
     return json(req, res, 200, { added, names: namesMap() });
   }
+  if (pathname === '/api/invoices' && m === 'POST') {
+    const b = await readJson(req);
+    const list = Array.isArray(b.invoices) ? b.invoices : [];
+    const digits = (v, max) => String(v ?? '').replace(/\D/g, '').slice(0, max);
+    const num = v => (Number.isFinite(+v) && v !== null && v !== '' ? +v : null);
+    let created = 0, updated = 0;
+    const now = Date.now();
+    db.exec('BEGIN');
+    try {
+      for (const n of list) {
+        const chave = digits(n?.chave, 44);
+        if (chave.length !== 44) continue;
+        if (q.invoiceExists.get(chave)) updated++; else created++;
+        q.upsertInvoice.run(chave, clean(n.orderNo, 60) || null, num(n.emittedAt), digits(n.doc, 14) || null, clean(n.name, 120) || null,
+          clean(n.city, 80) || null, clean(n.uf, 2).toUpperCase() || null, digits(n.cep, 8) || null, num(n.value), now);
+      }
+      db.exec('COMMIT');
+    } catch (e) { db.exec('ROLLBACK'); throw e; }
+    invalidateBoot();
+    return json(req, res, 200, { created, updated });
+  }
   if (pathname === '/api/imports' && m === 'POST') {
     const b = await readJson(req);
     const n = v => (Number.isFinite(+v) && v !== null && v !== '' ? Math.round(+v) : null);
@@ -357,7 +413,7 @@ async function api(req, res, pathname) {
     return json(req, res, 200, { ok: true });
   }
   if (pathname === '/api/data' && m === 'DELETE') {
-    db.exec('DELETE FROM orders; DELETE FROM imports;'); // o cache de nomes não tem dados de clientes e fica
+    db.exec('DELETE FROM orders; DELETE FROM imports; DELETE FROM invoices;'); // o cache de nomes não tem dados de clientes e fica
     invalidateBoot();
     return json(req, res, 200, { ok: true });
   }

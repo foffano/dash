@@ -5,7 +5,7 @@ Você exporta os pedidos da UpSeller em planilha, envia pelo painel e ele monta 
 
 - Roda na VPS (prod-01) em Docker, publicado só pelo Cloudflare Tunnel em `https://dash.toffa.com.br`, com login e senha.
 - Os dados ficam no servidor (SQLite) e aparecem em qualquer aparelho em que você entrar.
-- A planilha é lida no navegador. Só os campos usados no painel vão para o servidor: telefone, endereço completo, CPF/CNPJ e dados de nota fiscal são descartados antes.
+- Planilhas e notas fiscais são lidas no navegador. Só os campos usados no painel vão para o servidor: telefone e endereço (rua, número, bairro) são descartados antes. Das notas fiscais (XML da NF-e) ficam nome, CPF/CNPJ, cidade, estado, CEP, valor, chave e nº do pedido.
 - Sem dependências nativas: Node.js 22 + 2 bibliotecas de frontend (Chart.js e SheetJS), servidas pelo próprio app.
 
 ## Rodar no seu computador
@@ -107,20 +107,25 @@ Enquanto nada for importado, o painel mostra **dados de exemplo** fictícios.
 - **Taxa de cancelamento**: (cancelados depois de pagos + devolvidos) ÷ pedidos pagos. Os cancelamentos pagos são agrupados por causa: comprador desistiu, problema na entrega, vendedor (estoque, endereço), devolução ou outro.
 - **Faturamento**: coluna "Valor do Pedido" (se ausente, "Valor Total de Produtos" ou preço × quantidade).
 - **Gênero**: estimado pelo primeiro nome do comprador, com a contagem de pessoas por nome e sexo do Censo 2010 (API de nomes do IBGE). É feminino ou masculino quando 90% ou mais das pessoas com aquele nome são de um sexo; o resto fica "não identificado", assim como pedidos sem nome (Shopee), com apelido de usuário ou nome mascarado. Só o primeiro nome é enviado ao IBGE, pelo servidor, e o resultado fica guardado na tabela `names` do banco.
+- **Notas fiscais**: importe os XMLs da NF-e (soltos ou num .zip) na tela **Importar dados**. Cada nota se liga ao pedido pelo "Nº de Pedido" da UpSeller (campo `xPed`). Notas de entrada e não autorizadas são ignoradas. Se o pedido tiver mais de uma nota, vale a mais recente.
+- **Cliente**: com nota fiscal, o CPF/CNPJ identifica o cliente em todas as plataformas (recompra, valor por cliente e "mesmo cliente em várias plataformas" passam a juntar Shopee, TikTok, Mercado Livre etc.). Sem nota, vale o ID do comprador da plataforma.
+- **Nome e gênero**: o nome da nota tem prioridade sobre o da plataforma; é o que permite estimar o gênero nos pedidos da Shopee, que vêm sem nome.
+- **Origem do CPF**: o 9º dígito do CPF indica a região fiscal onde ele foi emitido; o painel compara com o estado de entrega.
 - **Tamanho da cidade**: população do município no Censo 2022 (`public/municipios.json`, gerado por `scripts/gerar-municipios.py`).
 - **Lucro e margem**: não aparecem. A UpSeller não tem o custo dos produtos cadastrado, então qualquer lucro seria inventado.
-- **Cliente**: identificado por "ID do Comprador" (por plataforma) ou, na falta dele, nome + CEP.
+- **Cliente sem nota fiscal**: identificado por "ID do Comprador" (por plataforma) ou, na falta dele, nome + CEP.
 - **Estado**: coluna "Estado" (sigla ou nome) ou, se vazia, deduzido pelo CEP.
 - **KIT SKU**: as várias linhas de um kit são reunidas em um único item do pedido.
 
 ## Banco de dados e carregamento
 
-O banco é um arquivo SQLite (`/srv/apps/dash/data/raiox.db`) com três tabelas:
+O banco é um arquivo SQLite (`/srv/apps/dash/data/raiox.db`) com quatro tabelas:
 
 | Tabela | Conteúdo |
 |---|---|
 | `orders` | Um registro por pedido: `key` (nº do pedido), `t` (data, indexada), `data` (o pedido completo em JSON, com itens) e `updated_at`. Importar de novo o mesmo pedido atualiza o registro. |
 | `imports` | Histórico de importações (arquivo, data, linhas, novos, atualizados, período). |
+| `invoices` | Notas fiscais de venda (NF-e): chave, nº do pedido da UpSeller (`xPed`), data, CPF/CNPJ, nome, cidade, UF, CEP e valor. Ligadas ao pedido pelo nº do pedido na hora de montar a carga do painel. |
 | `names` | Cache do IBGE: primeiro nome → quantas mulheres e homens têm esse nome. Cada nome é consultado uma vez só. |
 
 Ao abrir o painel, o navegador faz uma única chamada, `/api/bootstrap`, que traz pedidos, importações e nomes. O servidor monta essa resposta só com os campos usados nos gráficos, em formato compacto (texto repetido vira referência a um dicionário), e a guarda pronta e comprimida na memória. Ela é refeita só quando os dados mudam (importação, apagar dados, nomes novos do IBGE). Se nada mudou desde o último acesso, o servidor responde 304 e o navegador usa a cópia que já tem. JavaScript, CSS e gráficos têm a versão no endereço (`app.js?v=v1.4.0`) e ficam guardados no navegador até a próxima versão. A biblioteca de planilhas só é baixada na hora de importar.

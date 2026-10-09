@@ -2,6 +2,15 @@
 
 Versões no formato [SemVer](https://semver.org/lang/pt-BR/). Cada versão é uma release no GitHub (`vX.Y.Z`).
 
+## v1.5.0 — 2026-10-09
+
+- Importação de notas fiscais (XML da NF-e, soltos ou em .zip) na tela Importar dados. Cada nota se liga ao pedido pelo "Nº de Pedido" da UpSeller (`xPed`); notas de entrada e não autorizadas são ignoradas.
+- Das notas ficam nome, CPF/CNPJ, cidade, UF, CEP, valor e chave (nova tabela `invoices`). Rua, número e bairro não saem do navegador.
+- CPF/CNPJ identifica o cliente em todas as plataformas: recompra e valor por cliente juntam Shopee, TikTok, Mercado Livre etc.
+- Nome da nota completa o gênero estimado nos pedidos da Shopee; cidade e UF da nota completam pedidos sem endereço.
+- Aba Público: origem do CPF (região fiscal de emissão) × estado de entrega, mesmo cliente em várias plataformas, coluna CPF/CNPJ e busca por nome ou CPF nos melhores clientes.
+- Backup passa a incluir as notas fiscais.
+
 ## v1.4.0 — 2026-10-09
 
 - Painel abre mais rápido: uma única chamada (`/api/bootstrap`) traz pedidos, importações e nomes, em vez de quatro, e sem a checagem de login antes.

@@ -121,6 +121,42 @@ function loadXlsx(){
   return xlsxLoading??=new Promise((ok,fail)=>{const s=document.createElement('script');s.src='vendor/xlsx.full.min.js'+(v?'?'+v:'');
     s.onload=ok;s.onerror=()=>{xlsxLoading=null;fail(new Error('A biblioteca de planilhas não carregou. Verifique a conexão.'))};document.head.appendChild(s)});
 }
+/* ---- notas fiscais (NF-e) ---- */
+// Do XML o painel usa: chave, nº do pedido da UpSeller (xPed), data, CPF/CNPJ, nome, cidade, UF, CEP e valor.
+// Rua, número, bairro e o resto da nota não saem do navegador.
+function parseNFe(text){
+  const doc=new DOMParser().parseFromString(text,'application/xml');
+  if(doc.getElementsByTagName('parsererror').length)return null;
+  const one=(el,tag)=>el?.getElementsByTagNameNS('*',tag)[0]||null;
+  const txt=(el,tag)=>(one(el,tag)?.textContent||'').trim();
+  const inf=one(doc,'infNFe');if(!inf)return null;
+  const ide=one(inf,'ide');
+  if(txt(ide,'tpNF')!=='1')return{skip:true};                       // nota de entrada (ex.: devolução)
+  const st=txt(doc,'cStat');if(st&&st!=='100'&&st!=='150')return{skip:true}; // não autorizada
+  const dest=one(inf,'dest'),end=one(dest,'enderDest');
+  return{
+    chave:(inf.getAttribute('Id')||'').replace(/\D/g,'')||txt(doc,'chNFe'),
+    orderNo:[...inf.getElementsByTagNameNS('*','xPed')].map(e=>e.textContent.trim()).find(Boolean)||'',
+    emittedAt:Date.parse(txt(ide,'dhEmi'))||null,
+    doc:txt(dest,'CPF')||txt(dest,'CNPJ'),name:txt(dest,'xNome'),
+    city:txt(end,'xMun'),uf:txt(end,'UF'),cep:txt(end,'CEP'),
+    value:+txt(one(inf,'ICMSTot'),'vNF')||null
+  };
+}
+async function readInvoiceFile(file){
+  const texts=[];
+  if(/\.zip$/i.test(file.name)){
+    await loadXlsx();
+    const z=XLSX.CFB.read(new Uint8Array(await file.arrayBuffer()),{type:'array'});
+    const dec=new TextDecoder('utf-8');
+    z.FileIndex.forEach((e,i)=>{if(e.type===2&&/\.xml$/i.test(z.FullPaths[i]||e.name)&&e.content)texts.push(dec.decode(e.content))});
+    if(!texts.length)throw new Error('o .zip não tem arquivos .xml');
+  } else texts.push(await file.text());
+  const out=[];let skipped=0,invalid=0;
+  for(const t of texts){const n=parseNFe(t);if(!n)invalid++;else if(n.skip)skipped++;else if(n.chave.length===44)out.push(n);else invalid++}
+  if(!out.length&&!skipped)throw new Error('não é um XML de NF-e');
+  return{invoices:out,skipped,invalid};
+}
 async function readSheetFile(file){
   await loadXlsx();
   const buf=await file.arrayBuffer();
@@ -217,7 +253,7 @@ let MUN=null;          // {UF: {cidade normalizada: [população, capital 0/1]}}
 const GENDER_LABEL={F:'Mulheres',M:'Homens','?':'Não identificado'};
 const CITY_SIZES=['Capital','Cidade grande (500 mil+)','Cidade média (100–500 mil)','Cidade pequena (20–100 mil)','Até 20 mil habitantes'];
 function firstName(o){
-  const n=(o.buyerName||o.recipient||'').trim();
+  const n=(o.nfName||o.buyerName||o.recipient||'').trim();
   // Sem nome, apelido de usuário (fulano_123, maria.silva) ou nome mascarado: não dá para estimar.
   if(!n||/[\d_@*.]/.test(n)||(!/\s/.test(n)&&n===n.toLowerCase()))return '';
   const k=norm(n.split(/\s+/)[0]).toUpperCase();
@@ -234,6 +270,11 @@ function citySizeOf(o){
   return cap?CITY_SIZES[0]:pop>=5e5?CITY_SIZES[1]:pop>=1e5?CITY_SIZES[2]:pop>=2e4?CITY_SIZES[3]:CITY_SIZES[4];
 }
 function applyProfile(o){o.fname=firstName(o);o.gender=genderOf(o.fname);o.citySize=citySizeOf(o)}
+// 9º dígito do CPF: região fiscal onde ele foi emitido.
+const CPF_REGION_UFS=[['RS'],['DF','GO','MS','MT','TO'],['AC','AM','AP','PA','RO','RR'],['CE','MA','PI'],['AL','PB','PE','RN'],['BA','SE'],['MG'],['ES','RJ'],['SP'],['PR','SC']];
+const CPF_REGION_LABEL=CPF_REGION_UFS.map(u=>u.length>2?u.slice(0,-1).join(', ')+' e '+u[u.length-1]:u.join(' e '));
+const cpfRegion=doc=>doc&&doc.length===11?+doc[8]:null;
+const fmtDoc=d=>!d?'':d.length===11?d.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/,'$1.$2.$3-$4'):d.length===14?d.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/,'$1.$2.$3/$4-$5'):d;
 function cityTitle(c){return c.toLowerCase().replace(/(^|\s|-)(\p{L})/gu,(m,a,b)=>a+b.toUpperCase()).replace(/\s(De|Da|Do|Das|Dos|E)\s/g,m=>m.toLowerCase())}
 function enrich(o,hasPayT=true){
   o.cls=classify(o,hasPayT);
@@ -243,7 +284,9 @@ function enrich(o,hasPayT=true){
   o.prodTotal=o.productsTotal??o.itemsRev;
   o.rev=o.orderValue??o.productsTotal??o.itemsRev;
   const bid=o.buyerId, bn=norm(o.buyerName||o.recipient);
-  o.cust=bid?o.platform+':'+bid:bn?'n:'+bn+':'+(o.cep||'').slice(0,5):null;
+  // Com nota fiscal, o CPF/CNPJ identifica o cliente em todas as plataformas.
+  o.cust=o.doc?'doc:'+o.doc:bid?o.platform+':'+bid:bn?'n:'+bn+':'+(o.cep||'').slice(0,5):null;
+  o.cpfReg=cpfRegion(o.doc);
   o.cityN=o.city?cityTitle(o.city):'';
   applyProfile(o);
   return o;
@@ -258,7 +301,7 @@ async function api(path,{method='GET',body}={}){
   if(!r.ok)throw new Error(data?.error||`Erro ${r.status} no servidor.`);
   return data;
 }
-const stripDerived=o=>{const{cls,cancelGroup,itemsRev,units,prodTotal,rev,cust,cityN,fname,gender,citySize,...raw}=o;return raw};
+const stripDerived=o=>{const{cls,cancelGroup,itemsRev,units,prodTotal,rev,cust,cityN,fname,gender,citySize,cpfReg,doc,nfName,...raw}=o;return raw};
 
 /* ================= estado ================= */
 const state={orders:[],byKey:new Map(),imports:[],sample:false,platColor:new Map()};
@@ -266,7 +309,7 @@ const F={period:'90',from:null,to:null,platform:'all',store:'all'};
 let S=null, active='geral', TH={};
 const charts={};
 const dirty=new Set();
-const ui={prodSort:{k:'rev',dir:-1},genderSort:{k:'k',dir:1},custSort:{k:'rev',dir:-1},ufSort:{k:'rev',dir:-1},mapMetric:'rev',insFilter:'all',pGroup:'sku',pCurve:'',pSearch:''};
+const ui={prodSort:{k:'rev',dir:-1},genderSort:{k:'k',dir:1},custSort:{k:'rev',dir:-1},custSearch:'',ufSort:{k:'rev',dir:-1},mapMetric:'rev',insFilter:'all',pGroup:'sku',pCurve:'',pSearch:''};
 try{const sv=JSON.parse(localStorage.getItem('raiox-ui')||'{}');if(sv.period)F.period=sv.period;if(sv.pGroup)ui.pGroup=sv.pGroup}catch(e){}
 const saveUi=()=>{try{localStorage.setItem('raiox-ui',JSON.stringify({period:F.period,pGroup:ui.pGroup}))}catch(e){}};
 
@@ -364,8 +407,8 @@ function aggCustomers(){return memo('cust',()=>{
   for(const o of S.scope){
     if(o.cls!=='ok'||!o.cust)continue;
     let c=hist.get(o.cust);
-    if(!c)hist.set(o.cust,c={k:o.cust,name:o.buyerName||o.recipient||o.buyerId||'—',uf:o.uf,city:o.cityN,platform:o.platform,orders:0,rev:0,first:Infinity,last:0,ts:[]});
-    c.orders++;c.rev+=o.rev||0;if(o.t!=null){c.ts.push(o.t);if(o.t<c.first)c.first=o.t;if(o.t>c.last)c.last=o.t}
+    if(!c)hist.set(o.cust,c={k:o.cust,name:o.nfName?cityTitle(o.nfName):o.buyerName||o.recipient||o.buyerId||'—',doc:o.doc,reg:o.cpfReg,uf:o.uf,city:o.cityN,platform:o.platform,plats:new Set(),orders:0,rev:0,first:Infinity,last:0,ts:[]});
+    c.plats.add(o.platform);c.orders++;c.rev+=o.rev||0;if(o.t!=null){c.ts.push(o.t);if(o.t<c.first)c.first=o.t;if(o.t>c.last)c.last=o.t}
   }
   const per=new Map();
   for(const o of S.valid){if(!o.cust)continue;let c=per.get(o.cust);if(!c)per.set(o.cust,c={orders:0,rev:0});c.orders++;c.rev+=o.rev||0}
@@ -381,6 +424,11 @@ function aggCustomers(){return memo('cust',()=>{
     top.push({...h,pOrders:pc.orders,pRev:pc.rev});
   }
   gaps.sort((a,b)=>a-b);
+  // CPF: clientes em mais de uma plataforma e região de emissão x estado de entrega
+  let withDoc=0,multi=0,withReg=0,outReg=0;const regs=Array(10).fill(0),combos=new Map();
+  for(const k of per.keys()){const h=hist.get(k);if(!h.doc)continue;withDoc++;
+    if(h.plats.size>1){multi++;const ck=[...h.plats].sort().join(' + ');combos.set(ck,(combos.get(ck)||0)+1)}
+    if(h.reg!=null){withReg++;regs[h.reg]++;if(h.uf&&!CPF_REGION_UFS[h.reg].includes(h.uf))outReg++}}
   const months=new Map();
   for(const o of S.valid){
     if(!o.cust||o.t==null)continue;const d=new Date(o.t);const mk=d.getFullYear()+'-'+pad(d.getMonth()+1);
@@ -391,7 +439,7 @@ function aggCustomers(){return memo('cust',()=>{
   const ident=S.valid.filter(o=>o.cust).length;
   return{n:per.size,nNew,nRet,repeaters,repeatRate:per.size?repeaters/per.size:NaN,ltv:per.size?ltv/per.size:0,freq,
     medianGap:gaps.length?gaps[Math.floor(gaps.length/2)]:null,months,top,identified:ident>0,identShare:S.valid.length?ident/S.valid.length:0,
-    ordersPerCust:per.size?ident/per.size:0};
+    ordersPerCust:per.size?ident/per.size:0,withDoc,multi,withReg,outReg,regs,combos:[...combos].sort((a,b)=>b[1]-a[1])};
 })}
 function aggStates(){return memo('uf',()=>{
   const m=new Map(),cities=new Map();let tot=0,totN=0;
@@ -589,6 +637,11 @@ function buildInsights(){return memo('ins',()=>{
     else if(rr>=0.2)add('good','Público',`${fmtP(rr)} dos clientes voltaram a comprar`,`Boa fidelização. Cada cliente gerou em média <strong>${fmtR(cu.ltv)}</strong> no histórico.${cu.medianGap?` Intervalo típico entre compras: <strong>${fmtN(cu.medianGap)} dias</strong>, um bom momento para enviar um cupom.`:''}`);
     else add('info','Público',`${fmtP(rr)} dos clientes compraram mais de uma vez`,`Valor médio por cliente no histórico: <strong>${fmtR(cu.ltv)}</strong>.${cu.medianGap?` Intervalo típico entre compras: ${fmtN(cu.medianGap)} dias.`:''}`);
   }
+  // CPF
+  if(cu.identified&&cu.withDoc>=30){
+    if(cu.multi)add('info','Público',`${fmtN(cu.multi)} clientes compram em mais de uma plataforma`,`Identificados pelo CPF/CNPJ da nota fiscal (${fmtP(cu.multi/cu.withDoc)} dos clientes com nota). Combinação mais comum: <strong>${esc(cu.combos[0][0])}</strong>. Esses clientes já conhecem a marca: são bons candidatos a cupom de recompra.`);
+    if(cu.withReg>=30&&cu.outReg/cu.withReg>=0.15)add('info','Público',`${fmtP(cu.outReg/cu.withReg,0)} dos clientes recebem fora da região de origem do CPF`,'Pela região fiscal de emissão do CPF. Parte são pessoas que mudaram de estado, parte são compras para presentear alguém em outro estado: vale testar mensagens de presente em datas comemorativas.');
+  }
   // perfil
   const pf=aggProfile();
   if(pf.known>=30&&pf.coverage>=0.2){
@@ -718,9 +771,14 @@ function renderPublico(){
     kpi('Já eram clientes',fmtN(cu.nRet),null,null,{hint:fmtP(cu.n?cu.nRet/cu.n:0,0)+' do total'}),
     kpi('Taxa de recompra',fmtP(cu.repeatRate),null,null,{hint:'2+ pedidos no histórico'}),
     kpi('Valor por cliente',fmtR(cu.ltv),null,null,{hint:'histórico completo'}),
-    kpi('Intervalo de recompra',cu.medianGap?fmtN(cu.medianGap)+' dias':'—',null,null,{hint:'mediana'})
+    kpi('Intervalo de recompra',cu.medianGap?fmtN(cu.medianGap)+' dias':'—',null,null,{hint:'mediana'}),
+    ...(cu.withDoc?[kpi('Em 2+ plataformas',fmtN(cu.multi),null,null,{hint:`de ${fmtN(cu.withDoc)} com CPF/CNPJ`})]:[])
   ].join(''):`<div class="panel" style="grid-column:1/-1"><p class="note">Nenhum cliente identificado. Exporte as colunas <b>ID do Comprador</b> ou <b>Nome de Comprador</b> para analisar recompra e fidelidade.</p></div>`;
   renderPerfil();
+  // CPF
+  $('#cpfRegion').innerHTML=cu.withReg?barList(cu.regs.map((n,i)=>({label:CPF_REGION_LABEL[i],value:n})).filter(r=>r.value).sort((a,b)=>b.value-a.value),{fmt:fmtN,sub:r=>fmtP(r.value/cu.withReg,0)}):'<div class="empty">Importe os XMLs das notas fiscais para ver a origem do CPF dos clientes.</div>';
+  $('#cpfNote').innerHTML=cu.withReg?`<b>${fmtP(cu.outReg/cu.withReg,0)}</b> dos clientes recebem em um estado fora da região onde o CPF foi emitido (mudaram de estado ou compram para outra pessoa). ${fmtP(cu.n?cu.withDoc/cu.n:0,0)} dos clientes do período têm nota fiscal importada.`:'';
+  $('#multiPlat').innerHTML=cu.withDoc?(cu.combos.length?barList(cu.combos.slice(0,6).map(([k,n])=>({label:k,value:n})),{fmt:v=>fmtN(v)+' clientes'}):'<div class="empty">Nenhum cliente com o mesmo CPF em mais de uma plataforma.</div>'):'<div class="empty">Importe os XMLs das notas fiscais para unir clientes entre plataformas pelo CPF.</div>';
   // mapa
   const met=ui.mapMetric,by=new Map(st.list.map(g=>[g.k,g]));
   const vals=st.list.map(g=>met==='ticket'?(g.n>=3?g.ticket:0):g[met]);const mx=Math.max(...vals,0)||1;
@@ -761,17 +819,20 @@ function renderPublico(){
   mkChart('cTicketHist',{type:'bar',data:{labels:binL,datasets:[barDs('Pedidos',hist,TH['--s1'])]},options:chartOpts({money:false,tooltipExtra:it=>[`  ${fmtP(c.n?hist[it[0].dataIndex]/c.n:0)} dos pedidos`]})});
   const bk=[0,0,0,0,0];for(const o of S.valid)bk[Math.min(Math.max(Math.round(o.units),1),5)-1]++;
   mkChart('cBasket',{type:'bar',data:{labels:['1 unidade','2','3','4','5 ou mais'],datasets:[barDs('Pedidos',bk,TH['--s1'])]},options:chartOpts({money:false,tooltipExtra:it=>[`  ${fmtP(c.n?bk[it[0].dataIndex]/c.n:0)} dos pedidos`]})});
+  const cq=norm(ui.custSearch),cd=ui.custSearch.replace(/\D/g,'');
+  const custRows=cq?cu.top.filter(x=>norm(x.name).includes(cq)||(cd.length>=3&&(x.doc||'').includes(cd))):cu.top;
   table($('#custTable'),[
     {k:'name',label:'Cliente',cls:'wrap-cell',fmt:x=>esc(x.name)},
+    {k:'doc',label:'CPF/CNPJ',fmt:x=>x.doc?`<span class="muted">${fmtDoc(x.doc)}</span>`:'<span class="muted">—</span>'},
     {k:'loc',label:'Local',v:x=>(x.city||'')+x.uf,fmt:x=>esc([x.city,x.uf].filter(Boolean).join(' / ')||'—')},
-    {k:'platform',label:'Plataforma'},
+    {k:'platform',label:'Plataforma',v:x=>[...x.plats].join(', '),fmt:x=>esc([...x.plats].join(', '))},
     {k:'pOrders',label:'Pedidos no período',num:true,fmt:x=>fmtN(x.pOrders)},
     {k:'pRev',label:'Gasto no período',num:true,fmt:x=>fmtR(x.pRev)},
     {k:'orders',label:'Pedidos (total)',num:true,fmt:x=>fmtN(x.orders)},
     {k:'rev',label:'Gasto (total)',num:true,fmt:x=>fmtR(x.rev)},
     {k:'first',label:'Primeira compra',num:true,fmt:x=>fmtDate(x.first)},
     {k:'last',label:'Última compra',num:true,fmt:x=>fmtDate(x.last)}
-  ],cu.top,ui.custSort,{limit:50,onSort:renderPublico});
+  ],custRows,ui.custSort,{limit:50,onSort:renderPublico});
 }
 
 function renderPerfil(){
@@ -871,21 +932,42 @@ function renderOperacao(){
 }
 
 /* ================= aba: dados ================= */
+function invStats(){const s=state.invoiceStats;if(!s||!s.total)return '<dt>Notas fiscais</dt><dd>0</dd>';
+  return`<dt>Notas fiscais</dt><dd>${fmtN(s.total)}</dd><dt>Pedidos com nota</dt><dd>${fmtN(s.linked)} <span class="muted">${fmtP(state.orders.length?s.linked/state.orders.length:0,0)}</span></dd>`}
 function renderDados(){
   const o=state.orders,real=o.filter(x=>!x.sample);
   let minT=Infinity,maxT=-Infinity;for(const x of real)if(x.t!=null){minT=Math.min(minT,x.t);maxT=Math.max(maxT,x.t)}
-  $('#baseStats').innerHTML=real.length?`<dt>Pedidos guardados</dt><dd>${fmtN(real.length)}</dd><dt>Primeiro pedido</dt><dd>${fmtDate(minT)}</dd><dt>Último pedido</dt><dd>${fmtDate(maxT)}</dd><dt>Plataformas</dt><dd>${fmtN(new Set(real.map(x=>x.platform)).size)}</dd><dt>Lojas</dt><dd>${fmtN(new Set(real.map(x=>x.store)).size)}</dd><dt>Clientes identificados</dt><dd>${fmtN(new Set(real.map(x=>x.cust).filter(Boolean)).size)}</dd>`:'<dt>Pedidos guardados</dt><dd>0</dd><dt>Situação</dt><dd style="font-family:var(--font)">mostrando dados de exemplo</dd>';
+  $('#baseStats').innerHTML=real.length?`<dt>Pedidos guardados</dt><dd>${fmtN(real.length)}</dd><dt>Primeiro pedido</dt><dd>${fmtDate(minT)}</dd><dt>Último pedido</dt><dd>${fmtDate(maxT)}</dd><dt>Plataformas</dt><dd>${fmtN(new Set(real.map(x=>x.platform)).size)}</dd><dt>Lojas</dt><dd>${fmtN(new Set(real.map(x=>x.store)).size)}</dd><dt>Clientes identificados</dt><dd>${fmtN(new Set(real.map(x=>x.cust).filter(Boolean)).size)}</dd>${invStats()}`:'<dt>Pedidos guardados</dt><dd>0</dd><dt>Situação</dt><dd style="font-family:var(--font)">mostrando dados de exemplo</dd>';
   $('#storageNote').textContent='Os dados ficam guardados no seu servidor e aparecem em qualquer aparelho em que você entrar. Baixe um backup de vez em quando.';
   const log=state.imports.slice().sort((a,b)=>b.at-a.at);
   $('#importLog').innerHTML=log.length?`<table><thead><tr><th>Arquivo</th><th>Data</th><th class="n">Linhas</th><th class="n">Novos</th><th class="n">Atualizados</th><th>Pedidos de</th></tr></thead><tbody>${log.map(l=>`<tr><td class="wrap-cell">${esc(l.file)}</td><td>${new Date(l.at).toLocaleString('pt-BR',{dateStyle:'short',timeStyle:'short'})}</td><td class="n">${fmtN(l.rows)}</td><td class="n">${fmtN(l.created)}</td><td class="n">${fmtN(l.updated)}</td><td>${fmtDate(l.minT)} a ${fmtDate(l.maxT)}</td></tr>`).join('')}</tbody></table>`:'<div class="empty">Nenhuma planilha importada ainda.</div>';
 }
+async function sendInvoices(list,label){
+  let c=0,u=0;
+  for(let i=0;i<list.length;i+=1000){
+    const r=await api('/api/invoices',{method:'POST',body:{invoices:list.slice(i,i+1000)}});c+=r.created;u+=r.updated;
+    if(list.length>1000)toast(`Enviando ${label}: ${fmtN(Math.min(i+1000,list.length))} de ${fmtN(list.length)} notas…`,60000);
+  }
+  let mn=Infinity,mx=-Infinity;for(const n of list)if(n.emittedAt){mn=Math.min(mn,n.emittedAt);mx=Math.max(mx,n.emittedAt)}
+  await api('/api/imports',{method:'POST',body:{file:label,rows:list.length,created:c,updated:u,minT:Number.isFinite(mn)?mn:null,maxT:Number.isFinite(mx)?mx:null}});
+  return{c,u};
+}
 async function importFiles(files){
-  let created=0,updated=0;const errors=[];
+  let created=0,updated=0,nfNew=0,nfUpd=0,nfSkip=0;const errors=[];
   showTab('dados');toast('Importando…',60000);
+  // Notas fiscais: todos os XMLs soltos viram uma importação só.
+  const nfFiles=files.filter(f=>/\.(xml|zip)$/i.test(f.name));files=files.filter(f=>!nfFiles.includes(f));
+  if(nfFiles.length){
+    let all=[];
+    for(const f of nfFiles){try{const r=await readInvoiceFile(f);all=all.concat(r.invoices);nfSkip+=r.skipped+r.invalid}catch(e){errors.push(`${f.name}: ${e.message||e}`)}}
+    if(all.length)try{const label=nfFiles.length===1?nfFiles[0].name:`${fmtN(nfFiles.length)} arquivos de nota fiscal`;const r=await sendInvoices(all,label);nfNew+=r.c;nfUpd+=r.u}
+      catch(e){if(e instanceof AuthError)return;errors.push(`notas fiscais: ${e.message||e}`)}
+  }
   for(const f of files){
     try{
       let orders,rowsN;
-      if(/\.json$/i.test(f.name)){const j=JSON.parse(await f.text());orders=(Array.isArray(j)?j:j.orders||[]).filter(o=>o&&o.key&&Array.isArray(o.items)).map(o=>({...stripDerived(o),sample:false}));rowsN=orders.length}
+      if(/\.json$/i.test(f.name)){const j=JSON.parse(await f.text());orders=(Array.isArray(j)?j:j.orders||[]).filter(o=>o&&o.key&&Array.isArray(o.items)).map(o=>({...stripDerived(o),sample:false}));rowsN=orders.length;
+        if(Array.isArray(j.invoices)&&j.invoices.length){const r=await sendInvoices(j.invoices,f.name+' (notas)');nfNew+=r.c;nfUpd+=r.u}}
       else{const{rows}=await readSheetFile(f);rowsN=rows.length;orders=buildOrders(rows,f.name)}
       if(!orders.length)throw new Error('nenhum pedido com número encontrado');
       let c=0,u=0,mn=Infinity,mx=-Infinity;
@@ -899,9 +981,10 @@ async function importFiles(files){
       await api('/api/imports',{method:'POST',body:{file:f.name,rows:rowsN,created:c,updated:u,minT:Number.isFinite(mn)?mn:null,maxT:Number.isFinite(mx)?mx:null}});
     }catch(e){if(e instanceof AuthError)return;errors.push(`${f.name}: ${e.message||e}`)}
   }
-  if(created+updated>0){await loadData();refresh();resolveNames()}
+  if(created+updated+nfNew+nfUpd>0){await loadData();refresh();resolveNames()}
   else renderDados();
-  toast(errors.length?`Não consegui importar ${errors.join(' · ')}`:`Importado: ${fmtN(created)} pedidos novos, ${fmtN(updated)} atualizados.`,errors.length?8000:4000);
+  const msg=[created+updated?`${fmtN(created)} pedidos novos, ${fmtN(updated)} atualizados`:'',nfNew+nfUpd?`${fmtN(nfNew)} notas novas, ${fmtN(nfUpd)} atualizadas`:'',nfSkip?`${fmtN(nfSkip)} notas ignoradas (entrada, não autorizadas ou inválidas)`:''].filter(Boolean).join(' · ');
+  toast(errors.length?`Não consegui importar ${errors.join(' · ')}${msg?' · '+msg:''}`:`Importado: ${msg||'nada novo'}.`,errors.length?8000:5000);
 }
 function toast(msg,ms=3500){const t=$('#toast');t.textContent=msg;t.hidden=false;clearTimeout(toast._t);toast._t=setTimeout(()=>t.hidden=true,ms)}
 
@@ -1014,6 +1097,7 @@ $('#fStore').onchange=e=>{F.store=e.target.value;refresh()};
 $('#pGroup').value=ui.pGroup;
 $('#pGroup').onchange=e=>{ui.pGroup=e.target.value;saveUi();renderProdutos();dirty.add('geral')};
 $('#pCurve').onchange=e=>{ui.pCurve=e.target.value;renderProdutos()};
+$('#custSearch').oninput=e=>{ui.custSearch=e.target.value;clearTimeout(renderPublico._t);renderPublico._t=setTimeout(renderPublico,180)};
 $('#pSearch').oninput=e=>{ui.pSearch=e.target.value;clearTimeout(renderProdutos._t);renderProdutos._t=setTimeout(renderProdutos,180)};
 $('#mapMetric').onclick=e=>{const b=e.target.closest('button');if(!b)return;ui.mapMetric=b.dataset.m;$$('#mapMetric button').forEach(x=>x.setAttribute('aria-pressed',x===b));renderPublico()};
 const drop=$('#drop'),fi=$('#fileInput');
@@ -1064,7 +1148,7 @@ const loadMun=()=>munLoading??=fetch('municipios.json?'+(document.querySelector(
   .then(r=>r.ok?r.json():null).catch(()=>{munLoading=null;return null});
 async function loadData(){
   const [b,mun]=await Promise.all([api('/api/bootstrap'),loadMun()]);
-  state.imports=b.imports;MUN=mun;
+  state.imports=b.imports;state.invoiceStats=b.orders.invoices||{total:0,linked:0};MUN=mun;
   for(const[k,v]of Object.entries(b.names||{}))NAMES.set(k,v);
   const orders=unpackOrders(b.orders);
   if(orders.length)setOrders(orders);else loadSample();
