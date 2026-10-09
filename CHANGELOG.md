@@ -2,6 +2,13 @@
 
 Versões no formato [SemVer](https://semver.org/lang/pt-BR/). Cada versão é uma release no GitHub (`vX.Y.Z`).
 
+## v1.6.2 — 2026-10-09
+
+- Leitor de .zip próprio, com descompactação nativa do navegador: um .zip de 80 MB com 15 mil notas é importado em segundos (antes travava a página por minutos e o Safari interrompia o envio).
+- Notas lidas e enviadas de mil em mil, sem travar a página, com progresso na tela.
+- Ignora os metadados que o Finder coloca no .zip (`__MACOSX/`, `._arquivo`).
+- Erros de leitura mostram a causa real (ex.: .zip inválido).
+
 ## v1.6.1 — 2026-10-09
 
 - Mensagem de erro de leitura orienta a usar o .zip: em app da web do Safari, nem a pasta inteira é lida por completo.

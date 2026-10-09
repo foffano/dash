@@ -146,14 +146,42 @@ function parseNFe(text){
     value:+txt(one(inf,'ICMSTot'),'vNF')||null
   };
 }
-async function readInvoiceTexts(file){
-  if(!/\.zip$/i.test(file.name))return[await file.text()];
-  await loadXlsx();
-  const z=XLSX.CFB.read(new Uint8Array(await file.arrayBuffer()),{type:'array'});
-  const dec=new TextDecoder('utf-8'),texts=[];
-  z.FileIndex.forEach((e,i)=>{if(e.type===2&&/\.xml$/i.test(z.FullPaths[i]||e.name)&&e.content)texts.push(dec.decode(e.content))});
-  if(!texts.length)throw new Error('o .zip não tem arquivos .xml');
-  return texts;
+// Leitor de .zip próprio: o da biblioteca de planilhas leva minutos no navegador com dezenas de milhares
+// de arquivos. Este lê o diretório central e entrega um XML por vez, descompactando com a API nativa
+// (DecompressionStream). Pula os metadados que o Finder coloca no .zip (__MACOSX/, ._arquivo).
+async function* zipXmlTexts(file){
+  const buf=new Uint8Array(await file.arrayBuffer()),dv=new DataView(buf.buffer),dec=new TextDecoder('utf-8');
+  let eocd=-1;
+  for(let i=buf.length-22;i>=Math.max(0,buf.length-65557);i--)if(dv.getUint32(i,true)===0x06054b50){eocd=i;break}
+  if(eocd<0)throw new Error('arquivo .zip inválido');
+  let count=dv.getUint16(eocd+10,true),off=dv.getUint32(eocd+16,true);
+  if((count===0xffff||off===0xffffffff)&&eocd>=20&&dv.getUint32(eocd-20,true)===0x07064b50){ // zip64
+    const z=Number(dv.getBigUint64(eocd-12,true));count=Number(dv.getBigUint64(z+32,true));off=Number(dv.getBigUint64(z+48,true));
+  }
+  let found=0;
+  for(let k=0,p=off;k<count;k++){
+    if(dv.getUint32(p,true)!==0x02014b50)throw new Error('arquivo .zip inválido');
+    const method=dv.getUint16(p+10,true),nlen=dv.getUint16(p+28,true),xlen=dv.getUint16(p+30,true),clen=dv.getUint16(p+32,true);
+    let csize=dv.getUint32(p+20,true),usize=dv.getUint32(p+24,true),lho=dv.getUint32(p+42,true);
+    const name=dec.decode(buf.subarray(p+46,p+46+nlen));
+    if(csize===0xffffffff||usize===0xffffffff||lho===0xffffffff){ // tamanhos e posição no campo extra zip64
+      for(let x=p+46+nlen,end=x+xlen;x+4<=end;){const id=dv.getUint16(x,true),sz=dv.getUint16(x+2,true);
+        if(id===1){let y=x+4;if(usize===0xffffffff){usize=Number(dv.getBigUint64(y,true));y+=8}if(csize===0xffffffff){csize=Number(dv.getBigUint64(y,true));y+=8}if(lho===0xffffffff)lho=Number(dv.getBigUint64(y,true));break}
+        x+=4+sz}
+    }
+    p+=46+nlen+xlen+clen;
+    if(!/\.xml$/i.test(name)||/(^|\/)(__MACOSX\/|\._)/.test(name))continue;
+    const start=lho+30+dv.getUint16(lho+26,true)+dv.getUint16(lho+28,true),data=buf.subarray(start,start+csize);
+    found++;
+    if(method===0)yield dec.decode(data);
+    else if(method===8)yield await new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).text();
+    else throw new Error(`o .zip usa um tipo de compactação não suportado (${method})`);
+  }
+  if(!found)throw new Error('o .zip não tem arquivos .xml');
+}
+async function* invoiceTexts(file){
+  if(/\.zip$/i.test(file.name))yield* zipXmlTexts(file);
+  else yield await file.text();
 }
 async function readSheetFile(file){
   await loadXlsx();
@@ -957,11 +985,6 @@ async function sourcesFromDrop(dt){
   if(!entries.length)return[...(dt?.files||[])].map(fromFile);
   const out=[];for(const e of entries)await walkEntry(e,out);return out;
 }
-async function readWithRetry(src,read){
-  try{return await read(await src.file())}
-  catch(e){if(!/I\/O|NotReadable|could not be read/i.test(String(e?.message||e)+e?.name))throw e;
-    await new Promise(r=>setTimeout(r,300));return await read(await src.file())}
-}
 async function sendInvoiceBatch(invoices,cancel){
   const r=await api('/api/invoices',{method:'POST',body:{invoices,cancel}});
   return r;
@@ -972,15 +995,29 @@ async function importInvoices(sources,label,st){
     if(!batch.length&&!cancels.length)return;
     const r=await sendInvoiceBatch(batch,cancels);c+=r.created;u+=r.updated;st.nfCancel+=r.cancelled||0;batch=[];cancels=[];
   };
+  let read=0;
+  const isIO=e=>/I\/O|NotReadable|could not be read/i.test(String(e?.message||e)+e?.name);
   for(const src of sources){
-    try{
-      const texts=await readWithRetry(src,readInvoiceTexts);
-      for(const t of texts){const n=parseNFe(t);
-        if(!n)st.nfInvalid++;else if(n.cancel)cancels.push(n.cancel);else if(n.skip)st.nfSkip++;
-        else if(n.chave.length===44){batch.push(n);if(n.emittedAt){mn=Math.min(mn,n.emittedAt);mx=Math.max(mx,n.emittedAt)}}else st.nfInvalid++}
-    }catch(e){if(e instanceof AuthError)throw e;st.unreadable.push(src.name)}
-    if(++done%200===0)toast(`Lendo notas fiscais: ${fmtN(done)} de ${fmtN(sources.length)} arquivos…`,60000);
-    if(batch.length>=1000)await flush();
+    let got=0;
+    for(let attempt=0;attempt<2;attempt++){
+      try{
+        for await(const t of invoiceTexts(await src.file())){
+          got++;const n=parseNFe(t);
+          if(!n)st.nfInvalid++;else if(n.cancel)cancels.push(n.cancel);else if(n.skip)st.nfSkip++;
+          else if(n.chave.length===44){batch.push(n);if(n.emittedAt){mn=Math.min(mn,n.emittedAt);mx=Math.max(mx,n.emittedAt)}}else st.nfInvalid++;
+          // Envia de mil em mil e devolve a vez à tela, para a página não travar com dezenas de milhares de notas.
+          if(++read%250===0){toast(`Lendo notas fiscais: ${fmtN(read)} lidas…`,60000);await new Promise(r=>setTimeout(r,0))}
+          if(batch.length>=1000)await flush();
+        }
+        break;
+      }catch(e){
+        if(e instanceof AuthError)throw e;
+        if(isIO(e)&&!got&&!attempt){await new Promise(r=>setTimeout(r,300));continue}
+        if(isIO(e))st.unreadable.push(src.name);else st.errors.push(`${src.name}: ${e.message||e}`);
+        break;
+      }
+    }
+    if(++done%200===0&&sources.length>1)toast(`Lendo notas fiscais: ${fmtN(done)} de ${fmtN(sources.length)} arquivos…`,60000);
   }
   await flush();
   if(c+u)await api('/api/imports',{method:'POST',body:{file:label,rows:c+u,created:c,updated:u,minT:Number.isFinite(mn)?mn:null,maxT:Number.isFinite(mx)?mx:null}});
@@ -988,7 +1025,7 @@ async function importInvoices(sources,label,st){
 }
 async function importFiles(input){
   const sources=input.map(x=>x instanceof File?fromFile(x):x);
-  const st={nfNew:0,nfUpd:0,nfSkip:0,nfInvalid:0,nfCancel:0,unreadable:[]};
+  const st={nfNew:0,nfUpd:0,nfSkip:0,nfInvalid:0,nfCancel:0,unreadable:[],errors:[]};
   let created=0,updated=0;const errors=[];
   showTab('dados');toast('Importando…',60000);
   try{
@@ -1024,6 +1061,7 @@ async function importFiles(input){
     st.nfCancel?`${fmtN(st.nfCancel)} notas canceladas`:'',
     st.nfSkip?`${fmtN(st.nfSkip)} notas de entrada ou não autorizadas ignoradas`:'',
     st.nfInvalid?`${fmtN(st.nfInvalid)} arquivos que não são NF-e`:''].filter(Boolean).join(' · ');
+  errors.unshift(...st.errors);
   if(st.unreadable.length)errors.unshift(`${fmtN(st.unreadable.length)} arquivos não puderam ser lidos pelo navegador (ex.: ${st.unreadable.slice(0,2).join(', ')}). Compacte as notas num .zip (botão direito na pasta → Comprimir, ou use o .zip baixado da UpSeller) e arraste o .zip: é um arquivo só e o macOS libera a leitura de uma vez. O que já entrou não duplica`);
   toast(errors.length?`${errors.slice(0,3).join(' · ')}${errors.length>3?` · e mais ${fmtN(errors.length-3)} erros`:''}${msg?' · Importado: '+msg:''}`:`Importado: ${msg||'nada novo'}.`,errors.length?15000:5000);
 }
