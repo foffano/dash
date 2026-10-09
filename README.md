@@ -106,6 +106,7 @@ Enquanto nada for importado, o painel mostra **dados de exemplo** fictícios.
 - **Não pago**: pedido que o comprador nunca pagou. Pode estar "Não Pago" ou cancelado sem "Hora do Pagamento" (ex.: "Pagamento atrasado por parte do cliente", "Unpaid Order", ou o comprador desistiu antes de pagar). Não conta como venda nem como cancelamento.
 - **Taxa de cancelamento**: (cancelados depois de pagos + devolvidos) ÷ pedidos pagos. Os cancelamentos pagos são agrupados por causa: comprador desistiu, problema na entrega, vendedor (estoque, endereço), devolução ou outro.
 - **Faturamento**: coluna "Valor do Pedido" (se ausente, "Valor Total de Produtos" ou preço × quantidade).
+- **Catálogo de anúncios**: exporte os anúncios/produtos de cada canal na UpSeller e importe as planilhas em **Importar dados**. As linhas de variante herdam os dados do anúncio. O estoque de variantes que repetem o mesmo valor (kits, mesmo item do armazém) é contado uma vez. Pedidos se ligam ao anúncio pelo ID do anúncio; sem ele, pelo SKU.
 - **Gênero**: estimado pelo primeiro nome do comprador, com a contagem de pessoas por nome e sexo do Censo 2010 (API de nomes do IBGE). É feminino ou masculino quando 90% ou mais das pessoas com aquele nome são de um sexo; o resto fica "não identificado", assim como pedidos sem nome (Shopee), com apelido de usuário ou nome mascarado. Só o primeiro nome é enviado ao IBGE, pelo servidor, e o resultado fica guardado na tabela `names` do banco.
 - **Notas fiscais**: importe os XMLs da NF-e na tela **Importar dados**. Com milhares de notas, arraste o .zip baixado da UpSeller (ou a pasta compactada): o Safari, principalmente em app da web, só consegue ler algumas centenas de arquivos soltos ou de uma pasta. Eventos de cancelamento (`-event.xml`) tiram a nota cancelada do pedido. Cada nota se liga ao pedido pelo "Nº de Pedido" da UpSeller (campo `xPed`). Notas de entrada e não autorizadas são ignoradas. Se o pedido tiver mais de uma nota, vale a mais recente.
 - **Cliente**: com nota fiscal, o CPF/CNPJ identifica o cliente em todas as plataformas (recompra, valor por cliente e "mesmo cliente em várias plataformas" passam a juntar Shopee, TikTok, Mercado Livre etc.). Sem nota, vale o ID do comprador da plataforma.
@@ -119,12 +120,13 @@ Enquanto nada for importado, o painel mostra **dados de exemplo** fictícios.
 
 ## Banco de dados e carregamento
 
-O banco é um arquivo SQLite (`/srv/apps/dash/data/raiox.db`) com quatro tabelas:
+O banco é um arquivo SQLite (`/srv/apps/dash/data/raiox.db`) com cinco tabelas:
 
 | Tabela | Conteúdo |
 |---|---|
 | `orders` | Um registro por pedido: `key` (nº do pedido), `t` (data, indexada), `data` (o pedido completo em JSON, com itens) e `updated_at`. Importar de novo o mesmo pedido atualiza o registro. |
 | `imports` | Histórico de importações (arquivo, data, linhas, novos, atualizados, período). |
+| `listings` | Catálogo de anúncios exportado da UpSeller, uma linha por variante: canal, ID do anúncio e da variante, título, SKU, variação, categoria, preço, estoque, imagem, vendas e visitas (Mercado Livre). Cada importação substitui a anterior da mesma origem. |
 | `invoices` | Notas fiscais de venda (NF-e): chave, nº do pedido da UpSeller (`xPed`), data, CPF/CNPJ, nome, cidade, UF, CEP e valor. Ligadas ao pedido pelo nº do pedido na hora de montar a carga do painel. |
 | `names` | Cache do IBGE: primeiro nome → quantas mulheres e homens têm esse nome. Cada nome é consultado uma vez só. |
 

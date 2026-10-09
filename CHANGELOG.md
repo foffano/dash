@@ -2,6 +2,14 @@
 
 Versões no formato [SemVer](https://semver.org/lang/pt-BR/). Cada versão é uma release no GitHub (`vX.Y.Z`).
 
+## v1.7.0 — 2026-10-09
+
+- Catálogo de anúncios: importe as planilhas de anúncios/produtos exportadas da UpSeller (TikTok, Shopee, Mercado Livre e User Products, Kwai, Amazon). O canal é reconhecido pelo nome do arquivo ou pelas colunas, e cada importação substitui a anterior da mesma origem (nova tabela `listings`, uma linha por variante).
+- Os pedidos se ligam aos anúncios pelo ID do anúncio (ou pelo SKU, como na Amazon).
+- Aba Produtos: agrupamento "Anúncio (catálogo)" com foto, canal, estoque, dias de estoque pelo ritmo de venda e preço atual; faturamento por categoria; anúncios sem venda no período.
+- A Shopee só exporta o código da categoria: o painel usa a categoria do mesmo produto em outro canal (mesmo SKU ou título).
+- Diagnóstico: anúncios fortes com estoque para menos de 15 dias, anúncios parados e categoria mais forte.
+
 ## v1.6.3 — 2026-10-09
 
 - O .zip de notas é lido em pedaços de até 8 MB (índice no fim do arquivo e depois janelas), com nova tentativa em cada pedaço, em vez de carregar o arquivo inteiro de uma vez: no app da web do Safari, ler um .zip de 80 MB de uma vez falhava com erro de I/O.

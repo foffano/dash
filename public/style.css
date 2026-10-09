@@ -240,3 +240,5 @@ tbody tr:hover{background:var(--hover)}
   .grid{gap:32px}
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+.thumb{display:inline-block;width:28px;height:28px;border-radius:4px;object-fit:cover;vertical-align:middle;margin-right:8px;background:var(--surface-2);border:1px solid var(--line)}

@@ -202,6 +202,58 @@ async function* invoiceTexts(file){
   if(/\.zip$/i.test(file.name))yield* zipXmlTexts(file);
   else yield await file.text();
 }
+/* ---- catálogo de anúncios (exportação de anúncios/produtos da UpSeller) ---- */
+const LISTING_HEADERS={
+  iddoanuncio:'listingId',iddeanuncio:'listingId',iddoanuncios:'listingId',asinprincipal:'listingId',
+  iddavariante:'variantId',asin:'variantId',nomedoanuncio:'title',titulo:'title',sku:'sku',skuprincipal:'parentSku',
+  informacaodevariacoes:'variation',nomedacategoria:'category',preco:'price',precodevenda:'price',precoml:'price',mlpreco:'price',
+  precopromocional:'promoPrice',precocomdesconto:'promoPrice',mlprecocomdesconto:'promoPrice',quantidade:'stock',
+  imagemdecapa:'image',imagensdoanuncio:'image',imagemdeanuncio1:'image',imagensdoproduto:'image',
+  vendas:'sales',visitas:'visits',nomedaloja:'store',nomedasualoja:'store',datadecriacao:'created'
+};
+// Canal pelo nome do arquivo ou, se não der, pelas colunas que só um canal tem.
+function listingPlatform(fileName,headers){
+  const f=fileName.normalize('NFC').toLowerCase(),h=new Set(headers);
+  const key=/tiktok/.test(f)?'tiktok':/kwai/.test(f)?'kwai':/shopee/.test(f)?'shopee':/amazon/.test(f)?'amazon':/mercado|user_products/.test(f)?'mercado'
+    :h.has('asin')?'amazon':h.has('fullmlcode')?'mercado':h.has('estadodarevisao')?'tiktok':h.has('precoriscado')?'kwai':h.has('gtin')?'shopee':'';
+  if(!key)return null;
+  // Usa o mesmo nome que a plataforma tem nos pedidos (ex.: "Mercado Libre"), para tudo se cruzar.
+  const known=[...new Set(state.orders.filter(o=>!o.sample).map(o=>o.platform))].find(p=>norm(p).includes(key));
+  return known||{tiktok:'TikTok Shop',kwai:'Kwai',shopee:'Shopee',amazon:'Amazon',mercado:'Mercado Livre'}[key];
+}
+const firstUrl=v=>((String(v||'').match(/https?:\/\/[^\s,;|"]+/)||[''])[0]).replace(/^http:/,'https:');
+async function readListingFile(file){
+  await loadXlsx();
+  const wb=XLSX.read(new Uint8Array(await file.arrayBuffer()),{type:'array'});
+  const aoa=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,raw:true,defval:''});
+  let hIdx=-1,best=0;
+  for(let i=0;i<Math.min(10,aoa.length);i++){const c=(aoa[i]||[]).filter(h=>LISTING_HEADERS[norm(h)]).length;if(c>best){best=c;hIdx=i}}
+  const head=(aoa[hIdx]||[]).map(norm);
+  // Planilha de pedidos tem "Nº de Pedido": essa segue o caminho normal.
+  if(best<4||!head.some(h=>LISTING_HEADERS[h]==='listingId')||head.some(h=>h==='nodepedido'||h==='nodepedidodaplataforma'))return null;
+  const platform=listingPlatform(file.name,head);if(!platform)return null;
+  const cols=[];head.forEach((h,j)=>{const f=LISTING_HEADERS[h];if(f&&!cols.some(c=>c[1]===f))cols.push([j,f])});
+  // Shopee e Mercado Livre trazem a variação em pares "Nome Variante N" / "Opção por Variante N".
+  const varPairs=[];head.forEach((h,j)=>{const m=h.match(/^nomevariante(\d)$/);if(m){const k=head.indexOf('opcaoporvariante'+m[1]);if(k>=0)varPairs.push([j,k])}});
+  const amazon=norm(platform).includes('amazon');
+  const out=[];
+  // Nas linhas de variante a UpSeller deixa em branco o que é do anúncio (ID, título, categoria...): herda da linha de cima.
+  const INHERIT=['listingId','title','category','parentSku','store','image','created','sales','visits'];let prev=null;
+  for(const r of aoa.slice(hIdx+1)){
+    const l={};for(const[j,f]of cols)l[f]=r[j];
+    if(!String(l.listingId??'').trim()){if(!prev||!String(l.variantId??l.sku??'').trim())continue;for(const f of INHERIT)if(l[f]===''||l[f]==null)l[f]=prev[f]}
+    else prev=l;
+    if(!l.variation&&varPairs.length)l.variation=varPairs.map(([a,b])=>r[a]&&r[b]?`${r[a]}: ${r[b]}`:'').filter(Boolean).join(' · ');
+    if(amazon&&String(l.variantId)===String(l.listingId))l.variantId='';
+    const st=String(l.stock??'');
+    out.push({listingId:String(l.listingId).trim(),variantId:String(l.variantId??'').trim(),title:clean(l.title),sku:clean(l.sku),parentSku:clean(l.parentSku),
+      variation:clean(l.variation),category:clean(l.category),store:clean(l.store),image:firstUrl(l.image),
+      price:num(l.price),promoPrice:num(l.promoPrice),sales:num(l.sales),visits:num(l.visits),created:toDate(l.created),
+      stock:/[a-z]/i.test(st)?(st.match(/\d+/g)||[]).reduce((a,b)=>a+ +b,0):num(st)}); // Amazon: "FBA: 0 FBM: 1467"
+  }
+  const source=file.name.normalize('NFC').replace(/\.[^.]+$/,'').replace(/[_ -]*\d{8,}.*$/,'').replace(/_/g,' ').trim()||platform;
+  return out.length?{platform,source,listings:out}:null;
+}
 async function readSheetFile(file){
   await loadXlsx();
   const buf=await file.arrayBuffer();
@@ -349,12 +401,12 @@ async function api(path,{method='GET',body}={}){
 const stripDerived=o=>{const{cls,cancelGroup,itemsRev,units,prodTotal,rev,cust,cityN,fname,gender,citySize,cpfReg,doc,nfName,...raw}=o;return raw};
 
 /* ================= estado ================= */
-const state={orders:[],byKey:new Map(),imports:[],sample:false,platColor:new Map()};
+const state={orders:[],byKey:new Map(),imports:[],sample:false,platColor:new Map(),listings:[],catalog:new Map(),catalogBySku:new Map()};
 const F={period:'90',from:null,to:null,platform:'all',store:'all'};
 let S=null, active='geral', TH={};
 const charts={};
 const dirty=new Set();
-const ui={prodSort:{k:'rev',dir:-1},genderSort:{k:'k',dir:1},custSort:{k:'rev',dir:-1},custSearch:'',ufSort:{k:'rev',dir:-1},mapMetric:'rev',insFilter:'all',pGroup:'sku',pCurve:'',pSearch:''};
+const ui={prodSort:{k:'rev',dir:-1},genderSort:{k:'k',dir:1},custSort:{k:'rev',dir:-1},deadSort:{k:'days',dir:-1},custSearch:'',ufSort:{k:'rev',dir:-1},mapMetric:'rev',insFilter:'all',pGroup:'listing',pCurve:'',pSearch:''};
 try{const sv=JSON.parse(localStorage.getItem('raiox-ui')||'{}');if(sv.period)F.period=sv.period;if(sv.pGroup)ui.pGroup=sv.pGroup}catch(e){}
 const saveUi=()=>{try{localStorage.setItem('raiox-ui',JSON.stringify({period:F.period,pGroup:ui.pGroup}))}catch(e){}};
 
@@ -418,7 +470,9 @@ function groupBy(list,keyFn){
     g.n++;g.rev+=o.rev||0;g.prod+=o.prodTotal||0;if(o.cust)g.cust.add(o.cust)}
   return[...m.values()].sort((a,b)=>b.rev-a.rev);
 }
-function prodKey(it,mode){return mode==='name'?norm(it.name):mode==='var'?norm(it.name)+'|'+norm(it.variation):(it.sku?norm(it.sku):norm(it.name))}
+function prodKey(it,mode){
+  if(mode==='listing'){const l=listingOf(it);return l?'l:'+l.platform+'|'+l.id:it.listingId?'l:?|'+it.listingId:norm(it.name)}
+  return mode==='name'?norm(it.name):mode==='var'?norm(it.name)+'|'+norm(it.variation):(it.sku?norm(it.sku):norm(it.name))}
 function aggProducts(mode){return memo('prod-'+mode,()=>{
   const m=new Map(),t30=S.to-30*DAY,t60=S.to-60*DAY;
   for(const o of S.cur){
@@ -426,13 +480,14 @@ function aggProducts(mode){return memo('prod-'+mode,()=>{
     for(const it of o.items){
       const k=prodKey(it,mode);
       let p=m.get(k);
-      if(!p)m.set(k,p={k,name:it.name,sku:it.sku,variation:mode==='var'?it.variation:'',units:0,rev:0,orders:0,cancel:0,tried:0,last30:0,prev30:0,last:0});
+      if(!p){const l=mode==='listing'?listingOf(it):null;
+        m.set(k,p={k,name:l?.title||it.name,sku:l?l.skus.join(', '):it.sku,variation:mode==='var'?it.variation:'',listing:l,platform:l?.platform||o.platform,units:0,rev:0,orders:0,cancel:0,tried:0,last30:0,prev30:0,last:0,u30:0})}
       if(o.cls!=='unpaid')p.tried++;
       if(bad)p.cancel++;
       if(!ok)continue;
       const r=it.price*it.qty;
       p.units+=it.qty;p.rev+=r;p.orders++;
-      if(o.t>t30)p.last30+=r;else if(o.t>t60)p.prev30+=r;
+      if(o.t>t30){p.last30+=r;p.u30+=it.qty}else if(o.t>t60)p.prev30+=r;
       if(o.t>p.last)p.last=o.t;
     }
   }
@@ -444,8 +499,24 @@ function aggProducts(mode){return memo('prod-'+mode,()=>{
     p.avgPrice=p.units?p.rev/p.units:0;
     p.cancelRate=p.tried?p.cancel/p.tried:0;
     p.trend=p.prev30>0?p.last30/p.prev30-1:(p.last30>0?Infinity:null);
+    // Dias de estoque: estoque do catálogo ÷ unidades vendidas por dia nos últimos 30 dias.
+    p.stockDays=p.listing&&p.listing.stock!=null&&p.u30>0?p.listing.stock/(p.u30/30):null;
   }
   return{list,total};
+})}
+function aggCatalog(){return memo('catalog',()=>{
+  if(!state.listings.length)return null;
+  const sold=new Map(),cats=new Map();let catRev=0;
+  for(const o of S.valid)for(const it of o.items){
+    const l=listingOf(it),r=it.price*it.qty;
+    if(l)sold.set(l,(sold.get(l)||0)+it.qty);
+    const c=topCategory(l?.category)||'Sem anúncio no catálogo';
+    let g=cats.get(c);if(!g)cats.set(c,g={k:c,rev:0,units:0,listings:new Set()});g.rev+=r;g.units+=it.qty;if(l)g.listings.add(l);catRev+=r;
+  }
+  const scoped=state.listings.filter(l=>(F.platform==='all'||l.platform===F.platform));
+  const dead=scoped.filter(l=>!sold.has(l)).map(l=>({...l,days:l.created?Math.max(0,Math.round((S.to-l.created)/DAY)):null}));
+  let linked=0,items=0;for(const o of S.valid)for(const it of o.items){items++;if(listingOf(it))linked++}
+  return{cats:[...cats.values()].sort((a,b)=>b.rev-a.rev),catRev,dead,scoped,sold,linkedShare:items?linked/items:0};
 })}
 function aggCustomers(){return memo('cust',()=>{
   const hist=new Map();
@@ -682,6 +753,15 @@ function buildInsights(){return memo('ins',()=>{
     else if(rr>=0.2)add('good','Público',`${fmtP(rr)} dos clientes voltaram a comprar`,`Boa fidelização. Cada cliente gerou em média <strong>${fmtR(cu.ltv)}</strong> no histórico.${cu.medianGap?` Intervalo típico entre compras: <strong>${fmtN(cu.medianGap)} dias</strong>, um bom momento para enviar um cupom.`:''}`);
     else add('info','Público',`${fmtP(rr)} dos clientes compraram mais de uma vez`,`Valor médio por cliente no histórico: <strong>${fmtR(cu.ltv)}</strong>.${cu.medianGap?` Intervalo típico entre compras: ${fmtN(cu.medianGap)} dias.`:''}`);
   }
+  // catálogo
+  const ca=aggCatalog();
+  if(ca){
+    const pl=aggProducts('listing').list,low=pl.filter(p=>p.abc!=='C'&&p.stockDays!=null&&p.stockDays<15).sort((a,b)=>a.stockDays-b.stockDays);
+    if(low.length)add(low[0].stockDays<7?'crit':'warn','Produtos',`${low.length} ${low.length>1?'anúncios fortes vão':'anúncio forte vai'} ficar sem estoque em menos de 15 dias`,
+      low.slice(0,3).map(p=>`<strong>${esc(p.name)}</strong> (${esc(p.platform)}): ${fmtN(p.listing.stock)} un., ~${fmtN(p.stockDays)} dias`).join(' · ')+'. Pelo ritmo de venda dos últimos 30 dias e o estoque informado na exportação de anúncios.');
+    if(ca.scoped.length>=10&&ca.dead.length/ca.scoped.length>0.3)add('info','Produtos',`${fmtN(ca.dead.length)} anúncios sem nenhuma venda no período`,`${fmtP(ca.dead.length/ca.scoped.length,0)} do catálogo. Revise título, fotos e preço dos que têm estoque, ou pause os que não fazem sentido manter. A lista está na aba Produtos.`);
+    if(ca.cats.length>=2&&ca.cats[0].k!=='Sem anúncio no catálogo')add('info','Produtos',`${esc(ca.cats[0].k)} responde por ${fmtP(ca.catRev?ca.cats[0].rev/ca.catRev:0,0)} do faturamento`,`Categoria mais forte do catálogo no período, com ${fmtN(ca.cats[0].listings.size)} anúncios vendendo.`);
+  }
   // CPF
   if(cu.identified&&cu.withDoc>=30){
     if(cu.multi)add('info','Público',`${fmtN(cu.multi)} clientes compram em mais de uma plataforma`,`Identificados pelo CPF/CNPJ da nota fiscal (${fmtP(cu.multi/cu.withDoc)} dos clientes com nota). Combinação mais comum: <strong>${esc(cu.combos[0][0])}</strong>. Esses clientes já conhecem a marca: são bons candidatos a cupom de recompra.`);
@@ -784,8 +864,11 @@ function renderProdutos(){
   const q=norm(ui.pSearch);
   const rows=list.filter(p=>(!ui.pCurve||p.abc===ui.pCurve)&&(!q||norm(p.name+' '+p.sku+' '+p.variation).includes(q)));
   const showTrend=S.days>=60;
+  const byListing=ui.pGroup==='listing';
+  const thumb=l=>l?.image?`<img class="thumb" src="${esc(l.image)}" alt="" loading="lazy" referrerpolicy="no-referrer">`:'<span class="thumb"></span>';
   const cols=[
-    {k:'name',label:'Produto',cls:'wrap-cell',fmt:p=>`${esc(p.name)}${p.variation?` <span class="muted">· ${esc(p.variation)}</span>`:''}`},
+    {k:'name',label:'Produto',cls:'wrap-cell',fmt:p=>`${byListing?thumb(p.listing):''}${esc(p.name)}${p.variation?` <span class="muted">· ${esc(p.variation)}</span>`:''}`},
+    ...(byListing?[{k:'platform',label:'Canal',fmt:p=>`<span class="muted">${esc(p.platform||'—')}</span>`}]:[]),
     {k:'sku',label:'SKU',fmt:p=>`<span class="muted">${esc(p.sku||'—')}</span>`},
     {k:'abc',label:'Curva',fmt:p=>`<span class="pill ${p.abc}">${p.abc}</span>`},
     {k:'units',label:'Unid.',num:true,fmt:p=>fmtN(p.units)},
@@ -794,9 +877,14 @@ function renderProdutos(){
     {k:'avgPrice',label:'Preço médio',num:true,fmt:p=>fmtR(p.avgPrice)},
     {k:'cancelRate',label:'Cancel.',num:true,fmt:p=>`<span class="${p.cancelRate>0.08?'neg':''}">${fmtP(p.cancelRate,0)}</span>`},
     ...(showTrend?[{k:'trend',label:'30d vs 30d',num:true,v:p=>Number.isFinite(p.trend)?p.trend:p.trend===Infinity?9e9:null,fmt:p=>p.trend==null?'—':p.trend===Infinity?'<span class="pos">novo</span>':`<span class="${p.trend>=0?'pos':'neg'}">${signed(p.trend)}</span>`}]:[]),
+    ...(byListing?[
+      {k:'stock',label:'Estoque',num:true,v:p=>p.listing?.stock??null,fmt:p=>p.listing?.stock!=null?fmtN(p.listing.stock):'—'},
+      {k:'stockDays',label:'Dura',num:true,fmt:p=>p.stockDays==null?'—':`<span class="${p.stockDays<15?'neg':''}">${p.stockDays>999?'999+':fmtN(p.stockDays)} d</span>`},
+      {k:'curPrice',label:'Preço atual',num:true,v:p=>p.listing?.price??null,fmt:p=>p.listing?.price?fmtR(p.listing.price):'—'}]:[]),
     {k:'last',label:'Última venda',num:true,fmt:p=>p.last?fmtDate(p.last):'—'}
   ];
   table($('#prodTable'),cols,rows,ui.prodSort,{onSort:renderProdutos});
+  renderCatalogo();
   const pairs=topPairs(10);
   $('#pairs').innerHTML=pairs.length?barList(pairs.map(p=>({label:p.a+'  +  '+p.b,value:p.n})),{fmt:v=>fmtN(v)+' pedidos'}):'<div class="empty">Poucos pedidos com mais de um produto no período.</div>';
   if(showTrend){
@@ -805,6 +893,24 @@ function renderProdutos(){
     const li=(p,cls)=>`<div class="bar-row"><span class="bl">${esc(p.name)}</span><span class="bv ${cls}">${signed(p.trend)}<small>${fmtR0(p.last30)}</small></span></div>`;
     $('#trends').innerHTML=`<div class="bars"><div class="kl" style="margin-bottom:-2px">Subindo</div>${up.map(p=>li(p,'pos')).join('')||'<span class="muted">Nenhum produto com alta relevante.</span>'}<div class="kl" style="margin:10px 0 -2px">Caindo</div>${dn.map(p=>li(p,'neg')).join('')||'<span class="muted">Nenhum produto com queda relevante.</span>'}</div>`;
   } else $('#trends').innerHTML='<div class="empty">Selecione um período de 60 dias ou mais para comparar tendências.</div>';
+}
+
+function renderCatalogo(){
+  const ca=aggCatalog();
+  $('#catBox').hidden=!ca;$('#catEmpty').hidden=!!ca;
+  if(!ca)return;
+  $('#catSub').textContent=`${fmtN(ca.scoped.length)} anúncios no catálogo · ${fmtP(ca.linkedShare,0)} dos itens vendidos ligados a um anúncio`;
+  $('#catList').innerHTML=barList(ca.cats.slice(0,10).map(g=>({label:g.k,value:g.rev,n:g.listings.size})),{sub:r=>`${fmtP(ca.catRev?r.value/ca.catRev:0,0)} · ${fmtN(r.n)} anúncios`});
+  const thumb=l=>l.image?`<img class="thumb" src="${esc(l.image)}" alt="" loading="lazy" referrerpolicy="no-referrer">`:'<span class="thumb"></span>';
+  table($('#deadTable'),[
+    {k:'title',label:'Anúncio',cls:'wrap-cell',fmt:l=>`${thumb(l)}${esc(l.title||l.id)}`},
+    {k:'platform',label:'Canal',fmt:l=>`<span class="muted">${esc(l.platform)}</span>`},
+    {k:'stock',label:'Estoque',num:true,fmt:l=>l.stock!=null?fmtN(l.stock):'—'},
+    {k:'price',label:'Preço',num:true,fmt:l=>l.price?fmtR(l.price):'—'},
+    {k:'conv',label:'Visitas',num:true,v:l=>l.visits,fmt:l=>l.visits!=null?fmtN(l.visits):'—'},
+    {k:'days',label:'Criado há',num:true,fmt:l=>l.days!=null?fmtN(l.days)+' d':'—'}
+  ],ca.dead,ui.deadSort,{limit:30,onSort:renderCatalogo});
+  $('#deadSub').textContent=`${fmtN(ca.dead.length)} de ${fmtN(ca.scoped.length)} anúncios sem venda válida no período`;
 }
 
 /* ================= aba: público ================= */
@@ -982,7 +1088,7 @@ function invStats(){const s=state.invoiceStats;if(!s||!s.total)return '<dt>Notas
 function renderDados(){
   const o=state.orders,real=o.filter(x=>!x.sample);
   let minT=Infinity,maxT=-Infinity;for(const x of real)if(x.t!=null){minT=Math.min(minT,x.t);maxT=Math.max(maxT,x.t)}
-  $('#baseStats').innerHTML=real.length?`<dt>Pedidos guardados</dt><dd>${fmtN(real.length)}</dd><dt>Primeiro pedido</dt><dd>${fmtDate(minT)}</dd><dt>Último pedido</dt><dd>${fmtDate(maxT)}</dd><dt>Plataformas</dt><dd>${fmtN(new Set(real.map(x=>x.platform)).size)}</dd><dt>Lojas</dt><dd>${fmtN(new Set(real.map(x=>x.store)).size)}</dd><dt>Clientes identificados</dt><dd>${fmtN(new Set(real.map(x=>x.cust).filter(Boolean)).size)}</dd>${invStats()}`:'<dt>Pedidos guardados</dt><dd>0</dd><dt>Situação</dt><dd style="font-family:var(--font)">mostrando dados de exemplo</dd>';
+  $('#baseStats').innerHTML=real.length?`<dt>Pedidos guardados</dt><dd>${fmtN(real.length)}</dd><dt>Primeiro pedido</dt><dd>${fmtDate(minT)}</dd><dt>Último pedido</dt><dd>${fmtDate(maxT)}</dd><dt>Plataformas</dt><dd>${fmtN(new Set(real.map(x=>x.platform)).size)}</dd><dt>Lojas</dt><dd>${fmtN(new Set(real.map(x=>x.store)).size)}</dd><dt>Clientes identificados</dt><dd>${fmtN(new Set(real.map(x=>x.cust).filter(Boolean)).size)}</dd>${invStats()}${state.listings.length?`<dt>Anúncios no catálogo</dt><dd>${fmtN(state.listings.length)} <span class="muted">${[...new Set(state.listings.map(l=>l.platform))].join(', ')}</span></dd>`:''}`:'<dt>Pedidos guardados</dt><dd>0</dd><dt>Situação</dt><dd style="font-family:var(--font)">mostrando dados de exemplo</dd>';
   $('#storageNote').textContent='Os dados ficam guardados no seu servidor e aparecem em qualquer aparelho em que você entrar. Baixe um backup de vez em quando.';
   const log=state.imports.slice().sort((a,b)=>b.at-a.at);
   $('#importLog').innerHTML=log.length?`<table><thead><tr><th>Arquivo</th><th>Data</th><th class="n">Linhas</th><th class="n">Novos</th><th class="n">Atualizados</th><th>Pedidos de</th></tr></thead><tbody>${log.map(l=>`<tr><td class="wrap-cell">${esc(l.file)}</td><td>${new Date(l.at).toLocaleString('pt-BR',{dateStyle:'short',timeStyle:'short'})}</td><td class="n">${fmtN(l.rows)}</td><td class="n">${fmtN(l.created)}</td><td class="n">${fmtN(l.updated)}</td><td>${fmtDate(l.minT)} a ${fmtDate(l.maxT)}</td></tr>`).join('')}</tbody></table>`:'<div class="empty">Nenhuma planilha importada ainda.</div>';
@@ -1044,7 +1150,7 @@ async function importInvoices(sources,label,st){
 }
 async function importFiles(input){
   const sources=input.map(x=>x instanceof File?fromFile(x):x);
-  const st={nfNew:0,nfUpd:0,nfSkip:0,nfInvalid:0,nfCancel:0,unreadable:[],errors:[]};
+  const st={nfNew:0,nfUpd:0,nfSkip:0,nfInvalid:0,nfCancel:0,unreadable:[],errors:[],listings:0,listingFiles:[]};
   let created=0,updated=0;const errors=[];
   showTab('dados');toast('Importando…',60000);
   try{
@@ -1059,7 +1165,15 @@ async function importFiles(input){
           if(Array.isArray(j.invoices)&&j.invoices.length){
             const inv=j.invoices.filter(n=>n.name||n.doc),canc=j.invoices.filter(n=>n.cancelled).map(n=>n.chave);
             for(let i=0;i<Math.max(inv.length,canc.length);i+=1000){const r=await sendInvoiceBatch(inv.slice(i,i+1000),canc.slice(i,i+1000));st.nfNew+=r.created;st.nfUpd+=r.updated}}}
-        else{const{rows}=await readSheetFile(f);rowsN=rows.length;orders=buildOrders(rows,f.name)}
+        else{
+          const cat=await readListingFile(f);
+          if(cat){
+            const r=await api('/api/listings',{method:'POST',body:cat});
+            st.listings+=r.saved;st.listingFiles.push(cat.platform);
+            await api('/api/imports',{method:'POST',body:{file:f.name,rows:r.saved,created:r.saved,updated:0,minT:null,maxT:null}});
+            continue;
+          }
+          const{rows}=await readSheetFile(f);rowsN=rows.length;orders=buildOrders(rows,f.name)}
         if(!orders.length)throw new Error('nenhum pedido com número encontrado');
         let c=0,u=0,mn=Infinity,mx=-Infinity;
         for(const o of orders)if(o.t!=null){mn=Math.min(mn,o.t);mx=Math.max(mx,o.t)}
@@ -1073,11 +1187,12 @@ async function importFiles(input){
       }catch(e){if(e instanceof AuthError)throw e;errors.push(`${src.name}: ${e.message||e}`)}
     }
   }catch(e){if(e instanceof AuthError)return;errors.push(e.message||String(e))}
-  if(created+updated+st.nfNew+st.nfUpd+st.nfCancel>0){await loadData();refresh();resolveNames()}
+  if(created+updated+st.nfNew+st.nfUpd+st.nfCancel+st.listings>0){await loadData();refresh();resolveNames()}
   else renderDados();
   const msg=[created+updated?`${fmtN(created)} pedidos novos, ${fmtN(updated)} atualizados`:'',
     st.nfNew+st.nfUpd?`${fmtN(st.nfNew)} notas novas, ${fmtN(st.nfUpd)} atualizadas`:'',
     st.nfCancel?`${fmtN(st.nfCancel)} notas canceladas`:'',
+    st.listings?`${fmtN(st.listings)} variações de anúncios (${[...new Set(st.listingFiles)].join(', ')})`:'',
     st.nfSkip?`${fmtN(st.nfSkip)} notas de entrada ou não autorizadas ignoradas`:'',
     st.nfInvalid?`${fmtN(st.nfInvalid)} arquivos que não são NF-e`:''].filter(Boolean).join(' · ');
   errors.unshift(...st.errors);
@@ -1230,6 +1345,19 @@ const SAMPLE_M=['JOAO','PEDRO','LUCAS','GABRIEL','RAFAEL','FELIPE','BRUNO','CARL
 function loadSample(){for(const n of SAMPLE_F)if(!NAMES.has(n))NAMES.set(n,[1000,1]);for(const n of SAMPLE_M)if(!NAMES.has(n))NAMES.set(n,[1,1000]);
   const r=rowsFromAoA(makeSample());setOrders(buildOrders(r.rows,'Dados de exemplo',true))}
 
+// Catálogo por ID do anúncio; Amazon e outros sem ID nos pedidos casam pelo SKU.
+function setCatalog(list){
+  state.listings=list;
+  state.catalog=new Map(list.map(l=>[String(l.id),l]));
+  state.catalogBySku=new Map();
+  for(const l of list)for(const k of l.skus)if(!state.catalogBySku.has(norm(k)))state.catalogBySku.set(norm(k),l);
+  // A Shopee exporta só o código da categoria: usa a do mesmo produto em outro canal (mesmo SKU ou mesmo título).
+  const byTitle=new Map(),bySkuCat=new Map();
+  for(const l of list)if(l.category){if(l.title)byTitle.set(norm(l.title),l.category);for(const k of l.skus)bySkuCat.set(norm(k),l.category)}
+  for(const l of list)if(!l.category)l.category=l.skus.map(k=>bySkuCat.get(norm(k))).find(Boolean)||byTitle.get(norm(l.title||''))||'';
+}
+const listingOf=it=>(it.listingId&&state.catalog?.get(String(it.listingId)))||(it.sku&&state.catalogBySku?.get(norm(it.sku)))||null;
+const topCategory=c=>c?String(c).split('>')[0].trim():'';
 // Pedidos no formato compacto do servidor (ver packOrders em server.js) de volta para objetos.
 const NUM_FIELDS=new Set(['t','payT','shipT','deadline','orderValue','productsTotal','price','qty']);
 function unpackOrders(p){
@@ -1249,6 +1377,7 @@ const loadMun=()=>munLoading??=fetch('municipios.json?'+(document.querySelector(
 async function loadData(){
   const [b,mun]=await Promise.all([api('/api/bootstrap'),loadMun()]);
   state.imports=b.imports;state.invoiceStats=b.orders.invoices||{total:0,linked:0};MUN=mun;
+  setCatalog(b.listings||[]);
   for(const[k,v]of Object.entries(b.names||{}))NAMES.set(k,v);
   const orders=unpackOrders(b.orders);
   if(orders.length)setOrders(orders);else loadSample();

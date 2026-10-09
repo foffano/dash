@@ -69,6 +69,18 @@ db.exec(`
     imported_at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS invoices_order ON invoices(order_no);
+  -- Catálogo de anúncios exportado da UpSeller: uma linha por variante. Cada importação substitui o que veio
+  -- da mesma origem (ex.: "Shopee", ou as duas exportações do Mercado Livre separadas).
+  CREATE TABLE IF NOT EXISTS listings (
+    source TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    listing_id TEXT NOT NULL,
+    variant_id TEXT NOT NULL DEFAULT '',
+    store TEXT, title TEXT, sku TEXT, parent_sku TEXT, variation TEXT, category TEXT,
+    price REAL, promo_price REAL, stock INTEGER, image TEXT, sales INTEGER, visits INTEGER,
+    created_src INTEGER, imported_at INTEGER NOT NULL,
+    PRIMARY KEY (platform, listing_id, variant_id)
+  );
   CREATE TABLE IF NOT EXISTS imports (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     file TEXT, at INTEGER, rows INTEGER, created INTEGER, updated INTEGER, min_t INTEGER, max_t INTEGER
@@ -92,6 +104,10 @@ const q = {
   // Evento de cancelamento pode chegar antes da própria nota: cria a linha só com a chave.
   cancelInvoice: db.prepare('INSERT INTO invoices (chave, cancelled, imported_at) VALUES (?, 1, ?) ON CONFLICT(chave) DO UPDATE SET cancelled = 1'),
   allInvoices: db.prepare('SELECT chave, order_no AS orderNo, emitted_at AS emittedAt, doc, name, city, uf, cep, value, cancelled FROM invoices ORDER BY emitted_at'),
+  clearListings: db.prepare('DELETE FROM listings WHERE source = ?'),
+  putListing: db.prepare(`INSERT OR REPLACE INTO listings (source, platform, listing_id, variant_id, store, title, sku, parent_sku, variation, category,
+    price, promo_price, stock, image, sales, visits, created_src, imported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+  allListings: db.prepare('SELECT * FROM listings ORDER BY platform, listing_id, variant_id'),
   allImports: db.prepare('SELECT id, file, at, rows, created, updated, min_t AS minT, max_t AS maxT FROM imports ORDER BY at DESC'),
 };
 
@@ -142,7 +158,7 @@ const SEC_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'Referrer-Policy': 'same-origin',
   'X-Frame-Options': 'DENY',
-  'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+  'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
 };
 const acceptsGzip = req => /\bgzip\b/.test(req.headers['accept-encoding'] || '');
 function send(req, res, status, body, type = 'application/json; charset=utf-8', extra = {}) {
@@ -276,8 +292,8 @@ const namesMap = () => Object.fromEntries(q.allNames.all().map(r => [r.name, [r.
 // produto...) entram uma vez num dicionário. A resposta fica pronta e comprimida na memória
 // e só é refeita quando os dados mudam; se nada mudou, o navegador recebe 304 (ETag).
 const ORDER_FIELDS = ['key', 'platform', 'store', 'status', 'afterSale', 'canceledBy', 'cancelReason', 't', 'payT', 'shipT', 'deadline', 'orderValue', 'productsTotal', 'buyerId', 'buyerName', 'city', 'uf', 'cep', 'shipMethod', 'doc', 'nfName'];
-const ITEM_FIELDS = ['name', 'sku', 'variation', 'price', 'qty'];
-const DICT_FIELDS = new Set(['platform', 'store', 'status', 'afterSale', 'canceledBy', 'cancelReason', 'city', 'uf', 'shipMethod', 'name', 'sku', 'variation']);
+const ITEM_FIELDS = ['name', 'sku', 'variation', 'price', 'qty', 'listingId'];
+const DICT_FIELDS = new Set(['platform', 'store', 'status', 'afterSale', 'canceledBy', 'cancelReason', 'city', 'uf', 'shipMethod', 'name', 'sku', 'variation', 'listingId']);
 function packOrders() {
   // Nota fiscal de cada pedido, pelo "Nº de Pedido" da UpSeller (campo xPed da NF-e). Vale a mais recente.
   const inv = new Map();
@@ -315,11 +331,34 @@ function packOrders() {
   }
   return { orderFields: ORDER_FIELDS, itemFields: ITEM_FIELDS, dictFields: [...DICT_FIELDS], dict, orders, invoices: { total, linked, cancelled } };
 }
+// Catálogo resumido por anúncio para o painel (as variantes somam estoque e vendas).
+function packListings() {
+  const m = new Map();
+  for (const r of q.allListings.iterate()) {
+    const k = r.platform + '|' + r.listing_id;
+    let a = m.get(k);
+    if (!a) m.set(k, a = { platform: r.platform, id: r.listing_id, store: r.store, title: r.title, category: r.category, image: r.image,
+      skus: [], variants: 0, price: null, stock: null, stocks: new Set(), sales: null, visits: null, created: r.created_src });
+    a.variants++;
+    for (const s of [r.parent_sku, r.sku]) if (s && !a.skus.includes(s)) a.skus.push(s);
+    const pr = r.promo_price > 0 ? r.promo_price : r.price;
+    if (pr > 0 && (a.price == null || pr < a.price)) a.price = pr;
+    // A UpSeller repete o estoque do armazém em cada variante que usa o mesmo item (kits, cores do mesmo SKU):
+    // soma cada valor distinto uma vez só, para não multiplicar o estoque.
+    if (r.stock != null) a.stocks.add(r.stock);
+    // Vendas e visitas vêm por anúncio no Mercado Livre e se repetem nas variantes: vale o maior valor.
+    if (r.sales != null) a.sales = Math.max(a.sales || 0, r.sales);
+    if (r.visits != null) a.visits = Math.max(a.visits || 0, r.visits);
+    if (!a.image && r.image) a.image = r.image;
+  }
+  for (const a of m.values()) { if (a.stocks.size) a.stock = [...a.stocks].reduce((x, y) => x + y, 0); delete a.stocks; }
+  return [...m.values()];
+}
 let boot = null, bootTimer = null;
 function bootData() {
   if (!boot) {
     const t = Date.now();
-    const raw = Buffer.from(JSON.stringify({ orders: packOrders(), imports: q.allImports.all(), names: namesMap() }));
+    const raw = Buffer.from(JSON.stringify({ orders: packOrders(), imports: q.allImports.all(), names: namesMap(), listings: packListings() }));
     boot = { raw, gz: zlib.gzipSync(raw), etag: '"' + crypto.createHash('sha1').update(raw).digest('base64url').slice(0, 22) + '"' };
     console.log(`Carga do painel montada: ${(raw.length / 1e6).toFixed(1)} MB, ${(boot.gz.length / 1e6).toFixed(2)} MB comprimida, ${Date.now() - t} ms`);
   }
@@ -416,6 +455,32 @@ async function api(req, res, pathname) {
     invalidateBoot();
     return json(req, res, 200, { created, updated, cancelled });
   }
+  if (pathname === '/api/listings' && m === 'POST') {
+    const b = await readJson(req);
+    const platform = clean(b.platform, 60), source = clean(b.source, 80) || platform;
+    const list = Array.isArray(b.listings) ? b.listings : [];
+    if (!platform || !list.length) return json(req, res, 400, { error: 'Nenhum anúncio enviado.' });
+    const num = v => (Number.isFinite(+v) && v !== null && v !== '' ? +v : null);
+    const int = v => (num(v) == null ? null : Math.round(num(v)));
+    const url = v => (/^https:\/\//.test(String(v || '')) ? clean(v, 500) : null);
+    const now = Date.now();
+    let saved = 0;
+    db.exec('BEGIN');
+    try {
+      q.clearListings.run(source);
+      for (const l of list) {
+        const id = clean(l?.listingId, 60);
+        if (!id) continue;
+        q.putListing.run(source, platform, id, clean(l.variantId, 60), clean(l.store, 120) || null, clean(l.title, 300) || null, clean(l.sku, 120) || null,
+          clean(l.parentSku, 120) || null, clean(l.variation, 200) || null, clean(l.category, 300) || null, num(l.price), num(l.promoPrice),
+          int(l.stock), url(l.image), int(l.sales), int(l.visits), num(l.created), now);
+        saved++;
+      }
+      db.exec('COMMIT');
+    } catch (e) { db.exec('ROLLBACK'); throw e; }
+    invalidateBoot();
+    return json(req, res, 200, { saved });
+  }
   if (pathname === '/api/imports' && m === 'POST') {
     const b = await readJson(req);
     const n = v => (Number.isFinite(+v) && v !== null && v !== '' ? Math.round(+v) : null);
@@ -424,7 +489,7 @@ async function api(req, res, pathname) {
     return json(req, res, 200, { ok: true });
   }
   if (pathname === '/api/data' && m === 'DELETE') {
-    db.exec('DELETE FROM orders; DELETE FROM imports; DELETE FROM invoices;'); // o cache de nomes não tem dados de clientes e fica
+    db.exec('DELETE FROM orders; DELETE FROM imports; DELETE FROM invoices; DELETE FROM listings;'); // o cache de nomes não tem dados de clientes e fica
     invalidateBoot();
     return json(req, res, 200, { ok: true });
   }

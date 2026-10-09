@@ -100,7 +100,7 @@
 
       <!-- PRODUTOS -->
       <section class="tab" id="tab-produtos" role="tabpanel" hidden>
-        <header class="page-head"><h1>Produtos</h1><p>Curva ABC, cancelamentos e tendências por produto.</p></header>
+        <header class="page-head"><h1>Produtos</h1><p>Curva ABC, cancelamentos, tendências e, com o catálogo de anúncios importado, estoque, categorias e anúncios parados.</p></header>
         <div class="kpis" id="abcTiles"></div>
         <div class="grid">
           <div class="block"><div class="ph"><h3>Top 10 por faturamento</h3></div><div class="chart h360"><canvas id="cTopProd"></canvas></div></div>
@@ -109,12 +109,17 @@
         <div class="block">
           <div class="ph"><h3>Todos os produtos</h3>
             <div class="filters">
-              <label class="prop"><span>Agrupar</span><select id="pGroup"><option value="sku">SKU do anúncio</option><option value="name">Nome do anúncio</option><option value="var">Anúncio + variação</option></select></label>
+              <label class="prop"><span>Agrupar</span><select id="pGroup"><option value="listing">Anúncio (catálogo)</option><option value="sku">SKU do anúncio</option><option value="name">Nome do anúncio</option><option value="var">Anúncio + variação</option></select></label>
               <label class="prop"><span>Curva</span><select id="pCurve"><option value="">Todas</option><option value="A">A</option><option value="B">B</option><option value="C">C</option></select></label>
               <label class="prop search"><input type="search" id="pSearch" placeholder="Buscar nome ou SKU" aria-label="Buscar produto"></label>
             </div>
           </div>
           <div class="tbl-wrap" id="prodTable"></div>
+        </div>
+        <p class="note" id="catEmpty" hidden>Importe as planilhas de anúncios da UpSeller (TikTok, Shopee, Mercado Livre, Kwai, Amazon) na aba <button class="link-btn" data-go="dados">Importar dados</button> para ver foto, estoque, categoria e os anúncios que não vendem.</p>
+        <div id="catBox" hidden>
+          <div class="block"><div class="ph"><h3>Faturamento por categoria</h3><span class="sub" id="catSub"></span></div><div id="catList" class="bars"></div></div>
+          <div class="block"><div class="ph"><h3>Anúncios sem venda</h3><span class="sub" id="deadSub"></span></div><div class="tbl-wrap" id="deadTable"></div></div>
         </div>
         <div class="grid">
           <div class="block"><div class="ph"><h3>Comprados juntos</h3><span class="sub">pares mais frequentes no mesmo pedido</span></div><div id="pairs"></div></div>
@@ -222,6 +227,7 @@
             <li><b>Nome de Comprador</b>, <b>ID do Comprador</b></li>
             <li><b>Cidade</b>, <b>Estado</b>, <b>CEP</b>, <b>Bairro</b></li>
             <li><b>Método de Envio</b></li>
+            <li>Catálogo: exporte os <b>anúncios/produtos</b> de cada canal na UpSeller e importe as planilhas aqui (cada importação substitui a anterior do mesmo canal)</li>
           </ul>
           <p class="note mt-s"><b>Notas fiscais (XML da NF-e):</b> ligam-se ao pedido pelo "Nº de Pedido" da UpSeller. Delas o painel guarda nome, CPF/CNPJ, cidade, estado, CEP, valor e chave da nota, para identificar o cliente em todas as plataformas e completar nome e cidade dos pedidos da Shopee.</p>
           <p class="note mt-s">Telefone e endereço (rua, número, bairro) são ignorados e nunca saem do seu computador.</p>
