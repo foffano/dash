@@ -1,4 +1,4 @@
-FROM node:22-alpine
+FROM public.ecr.aws/docker/library/node:22-alpine
 ARG APP_VERSION=dev
 ENV NODE_ENV=production PORT=3000 HOST=0.0.0.0 DATA_DIR=/app/data APP_VERSION=$APP_VERSION
 WORKDIR /app
